@@ -471,11 +471,27 @@ object SparkSchemaUtil {
 
   def guessMaxParallelTasks(): Int = {
     val sparkContext = SparkContext.getOrCreate
+    val master = sparkContext.master
+    val isSingleJvmLocal = (master == "local") || master.startsWith("local[")
+    val waitDeadlineMs = System.currentTimeMillis() + 30000
     var guess: Int = -1
     while ((guess <= 0) && !Thread.currentThread().isInterrupted) {
-      guess = sparkContext.getExecutorMemoryStatus.keys.size - 1
-      if (sparkContext.deployMode == "cluster")
-        guess -= 1
+      val executorCount = sparkContext.getExecutorMemoryStatus.keys.size
+      guess = if (isSingleJvmLocal) {
+        // In local mode driver and executor share a single JVM, so there is no extra driver entry to subtract.
+        math.max(executorCount, 1)
+      } else {
+        var inferredExecutors = executorCount - 1
+        if (sparkContext.deployMode == "cluster")
+          inferredExecutors -= 1
+        inferredExecutors
+      }
+      if ((guess <= 0) && (System.currentTimeMillis() >= waitDeadlineMs)) {
+        // Fall back to one task instead of spinning forever while executors are still settling.
+        guess = 1
+      }
+      if (guess <= 0)
+        Thread.sleep(50)
     }
     guess
   }

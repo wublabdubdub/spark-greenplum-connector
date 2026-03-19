@@ -291,18 +291,26 @@ case object GPClient extends Logging {
          |       and c.relname = ?
          |       and c.relstorage = ?
          |order by n.nspname, c.relname limit 1""".stripMargin
-    using(conn.prepareStatement(query)) {
-      statement => {
-        statement.setArray(1, sqlArr)
-        statement.setString(2, tblName)
-        statement.setString(3, tblKind)
-        using(statement.executeQuery()) {
-          rs => {
-            while (rs.next())
-              ret = rs.getString(1)
+    Try {
+      using(conn.prepareStatement(query)) {
+        statement => {
+          statement.setArray(1, sqlArr)
+          statement.setString(2, tblName)
+          statement.setString(3, tblKind)
+          using(statement.executeQuery()) {
+            rs => {
+              while (rs.next())
+                ret = rs.getString(1)
+            }
           }
         }
       }
+    }.recover {
+      case e: Exception =>
+        logWarning(
+          s"Unable to detect Greenplum distribution policy for ${tblSchema}.${tblName}; " +
+            s"falling back to connector defaults. ${e.getClass.getSimpleName}: ${e.getMessage}"
+        )
     }
     ret
   }
