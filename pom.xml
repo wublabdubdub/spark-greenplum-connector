@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.itsumma</groupId>
-    <artifactId>spark-greenplum-connector-master</artifactId>
+    <artifactId>spark-ymatrix-connector-master</artifactId>
     <packaging>pom</packaging>
     <version>3.1.0</version>
     <modules>

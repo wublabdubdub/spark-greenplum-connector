@@ -24,7 +24,7 @@ dependencies {
 }
 
 shadowJar {
-    archiveBaseName.set('spark-greenplum-connector_2.11')
+    archiveBaseName.set('spark-ymatrix-connector_2.11')
     archiveClassifier.set('')
     archiveVersion.set('3.1')
     minimize{

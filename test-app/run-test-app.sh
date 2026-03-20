@@ -3,7 +3,7 @@
 #       --conf spark.executor.heartbeatInterval=1h \
 #       --conf spark.network.timeout=12h \
 
-## Example for run spark-greenplum-connector test application
+## Example for run spark-ymatrix-connector test application
 ## Pass the number of rows to generate/insert as argument for this script
 log4j_setting="-Dlog4j.configuration=file:log4j.properties"
 
@@ -17,12 +17,12 @@ spark-submit --master yarn --deploy-mode client \
         --conf "spark.executor.extraJavaOptions=${log4j_setting}" \
         --conf spark.default.parallelism=10 \
         --conf spark.task.cpus=1 \
-        --conf spark.greenplum.jdbc.url=<jdbc:postgresql://host:port/database> \
-        --conf spark.greenplum.user=<dbuser> \
-        --conf spark.greenplum.password=<dbpassword> \
-        --conf spark.greenplum.dbtable=<tablename> \
-        --conf spark.greenplum.mode=<overwrite|append> \
-        --conf spark.greenplum.buffer.size=20000 \
+        --conf spark.ymatrix.jdbc.url=<jdbc:postgresql://host:port/database> \
+        --conf spark.ymatrix.user=<dbuser> \
+        --conf spark.ymatrix.password=<dbpassword> \
+        --conf spark.ymatrix.dbtable=<tablename> \
+        --conf spark.ymatrix.mode=<overwrite|append> \
+        --conf spark.ymatrix.buffer.size=20000 \
         --class com.itsumma.gpconnector.testapp.ItsGpConnectorTestApp \
         test-app_2.11-2.1.jar \
         $@

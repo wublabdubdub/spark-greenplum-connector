@@ -69,7 +69,10 @@ class GreenplumWriteBuilder(
             val createColumnsClause = SparkSchemaUtil.getGreenplumTableColumns(schema, GpTableTypes.Target)
             var createTable = s"create table ${targetTableCanonicalName} ($createColumnsClause)"
             if (optionsFactory.distributedBy.nonEmpty) {
-              createTable += GPClient.formatDistributedByClause(optionsFactory.distributedBy)
+              val (distributedByClause, _) = GPClient.formatDistributedByClause(optionsFactory.distributedBy)
+              if (distributedByClause.nonEmpty) {
+                createTable += s" ${distributedByClause}"
+              }
             }
             if (optionsFactory.partitionClause.nonEmpty) {
               createTable += s" (${optionsFactory.partitionClause})"
@@ -92,7 +95,10 @@ class GreenplumWriteBuilder(
                 GPClient.executeStatement(dbConnection, s"drop table ${targetTableCanonicalName}")
                 var createTable = s"create table ${targetTableCanonicalName} ($createColumnsClause)"
                 if (optionsFactory.distributedBy.nonEmpty) {
-                  createTable += GPClient.formatDistributedByClause(optionsFactory.distributedBy)
+                  val (distributedByClause, _) = GPClient.formatDistributedByClause(optionsFactory.distributedBy)
+                  if (distributedByClause.nonEmpty) {
+                    createTable += s" ${distributedByClause}"
+                  }
                 }
                 if (optionsFactory.partitionClause.nonEmpty) {
                   createTable += s" (${optionsFactory.partitionClause})"

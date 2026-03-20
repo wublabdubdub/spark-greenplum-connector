@@ -1,4 +1,4 @@
-# Advanced usage of ITSumma Spark Greenplum Connector
+# Advanced usage of ITSumma Spark YMatrix Connector
 
 In addition to the usual ability to read or write data from/to single database table
 this connector afford means to freely manipulate data on the DB side
@@ -8,7 +8,7 @@ giving gain in processing power and resource saving.
 
 Via **dbtable** option in data-reading operation it is possible to pass
 an arbitrary SQL select query which can tailor data to be put into Spark DataFrame 
-on the fly, for example a call of any PostgreSQL/Greenplum function that can return a set of records.
+on the fly, for example a call of any PostgreSQL/YMatrix function that can return a set of records.
 
 With **sqltransfer** option one can gain even more capabilities:
  - execute arbitrary PL/pgSQL code before and/or after data transfer, in particular create permanent or temporary tables
@@ -50,7 +50,7 @@ END $$
 , where `<ext_table>` is a string tag which will be substituted with the
 name of writable external table used to transfer data between DB and Spark. 
 ``list_of_expressions`` can contain any valid SQL expressions,
-user defined or inbuilt Greenplum functions; also, connector substitutes a default one 
+user defined or inbuilt YMatrix functions; also, connector substitutes a default one 
 matching schema of the output DataFrame via `<select_colList>` string tag.
 Structure of the `<ext_table>` table corresponds to the schema of Spark DataFrame 
 from where Spark will read data and should be specified using one of three methods:
@@ -122,7 +122,7 @@ END $$
 , where `<ext_table>` is a string tag which will be substituted with the
 name of readable external table used to transfer data between Spark and DB.  
 ``list_of_expressions`` can contain any valid SQL expressions,
-user defined or inbuilt Greenplum functions and so on, transforming 
+user defined or inbuilt YMatrix functions and so on, transforming 
 and combining data extracted from the `<ext_table>`. Structure of the `<ext_table>` table
 corresponds to the schema of Spark DataFrame from where data are sourced.
 
@@ -133,7 +133,7 @@ In the case of a streaming operation the following additional parameters provide
 ### Achieve Exactly-Once fault-tolerance guarantees
 There is nothing very spacial you should do for that on the data-sink side but make sure 
 that your operation is idempotent, that is it avoids any side effects which cannot be 
-undone using Greenplum transaction rollback, like autonomous transactions or 
+undone using YMatrix transaction rollback, like autonomous transactions or 
 sending data to remote systems.
 
 But just in case there is **undo.side.effects.sql** option where you can pass SQL DML

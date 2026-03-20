@@ -23,9 +23,9 @@ import java.net.URI
 /**
 * First of all substitute your Grennplam connection parameters here:
 */
-val dbUrl = "jdbc:postgresql://greenplum-master-host:5432/db-name"
-val dbUser = "your_gp_db_user"
-val dbPassword = "gp_user_password"
+val dbUrl = "jdbc:postgresql://ymatrix-master-host:5432/db-name"
+val dbUser = "your_ymatrix_db_user"
+val dbPassword = "ymatrix_user_password"
 
 /**
  * We will run two instances of connector using the Structured Streaming micro-batch mode.
@@ -63,7 +63,7 @@ def cleanFS(sc: SparkContext, fsPath: String) = {
 cleanFS(sc, cpDirName)
 
 /**
-* This PL/pgSQL script acts as records generator on the Greenplum DB sender side.
+* This PL/pgSQL script acts as records generator on the YMatrix DB sender side.
 * Connector will substitute angle-bracket template arguments with actual values there.
 */
 val generator = s"""do $$$$
@@ -108,7 +108,7 @@ end
 $$$$"""
 
 /**
-* This PL/pgSQL script process records passed over the pipline to the Greenplum receiver side and prints some statistics.
+* This PL/pgSQL script process records passed over the pipline to the YMatrix receiver side and prints some statistics.
 */
 val aggregator = """do $$
 declare
@@ -133,7 +133,7 @@ $$"""
 com.itsumma.gpconnector.ItsMiscUDFs.registerUDFs()
 println(s"Connector version: ${com.itsumma.gpconnector.ItsMiscUDFs.getVersion}")
 
-var stream = (spark.readStream.format("its-greenplum").option("url", dbUrl).
+var stream = (spark.readStream.format("its-ymatrix").option("url", dbUrl).
   option("user", dbUser).
   option("password", dbPassword).
   /**
@@ -155,7 +155,7 @@ var stream = (spark.readStream.format("its-greenplum").option("url", dbUrl).
   selectExpr("getBatchId() as batch_id", "id", "seq_n", "gen_ts", "spark_ts", "(cast(spark_ts as double) - cast(gen_ts as double)) as delay_s", "offset_id", "payload").
   //repartition(4).
 writeStream.
-  format("its-greenplum").option("url", dbUrl).
+  format("its-ymatrix").option("url", dbUrl).
   option("user", dbUser).
   option("password", dbPassword).
   option("sqlTransfer", aggregator).

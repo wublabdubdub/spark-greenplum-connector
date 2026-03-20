@@ -259,7 +259,8 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
                 s"($createColumnsClause)" +
                 s" LOCATION (${locationClause.toString()})" +
                 s" FORMAT 'TEXT' (" +
-                //s"    DELIMITER '${fieldDelimiter}' " +
+                s"    DELIMITER E'\\t' " +
+                s"    ESCAPE E'\\\\' " +
                 s"    NULL 'NULL' " +
                 //s"    NEWLINE 'LF' " + // Specifying NEWLINE is not supported for GP writable external tables
                 s"  ) " +

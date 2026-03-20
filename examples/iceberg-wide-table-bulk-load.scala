@@ -28,9 +28,9 @@ val tablePrefix = "iot_wide_"
 
 val tableStartIndex = 1
 val tableCount = 10
-val totalRowsPerTable = 1000000L
+val totalRowsPerTable = 10000000L
 val rowsPerBatch = 500000L
-val sparkPartitions = 8
+val sparkPartitions = 1
 
 val deviceCardinality = 20000
 val tenantCardinality = 20

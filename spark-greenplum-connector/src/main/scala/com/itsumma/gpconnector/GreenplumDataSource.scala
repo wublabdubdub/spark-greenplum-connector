@@ -10,7 +10,7 @@ import org.apache.spark.sql.types.StructType
 class GreenplumDataSource extends TableProvider
   with DataSourceRegister {
 
-  override def shortName(): String = "its-greenplum"
+  override def shortName(): String = "its-ymatrix"
 
   override def inferSchema(options: CaseInsensitiveStringMap): StructType = {
     val rowSet = new GreenplumRowSet(null, Array.empty[Transform], options.asCaseSensitiveMap())

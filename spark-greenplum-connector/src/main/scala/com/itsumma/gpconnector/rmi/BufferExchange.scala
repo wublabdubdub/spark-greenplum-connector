@@ -195,11 +195,11 @@ class BufferExchange (watermark: Int) extends Logging
           }
           fbGuardCond.signalAll()
         } else {
-          logWarning(s"doFlush: buff.position()==0")
+          logDebug("doFlush skipped empty buffer")
         }
         buff = null
       } else {
-        logWarning(s"doFlush: buff==null")
+        logDebug("doFlush skipped because buffer is already null")
       }
       logTrace(s"doFlush stop using filledBuffers, available=${av}, " +
         s"nBuffers=${nBuffers}, " +

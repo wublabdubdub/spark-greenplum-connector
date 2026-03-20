@@ -150,6 +150,9 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
       }
       gpfReport = rmiSlave.gpfReport
     } catch {
+      case e: Exception if RMISlave.isBenignRemoteShutdown(e) =>
+        logInfo(s"Ignoring remote shutdown while closing ${gpfdistUrl}, epoch=${epochId}: " +
+          s"${e.getClass.getCanonicalName}: ${e.getMessage}")
       case e: Exception => logError(s"${e.getClass.getCanonicalName}:${e.getMessage} " +
         s"${e.getStackTrace.mkString("", "\n", "")}")
     } finally {

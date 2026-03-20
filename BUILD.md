@@ -1,4 +1,4 @@
-# Building ITSumma Spark Greenplum Connector
+# Building ITSumma Spark YMatrix Connector
 
 This library can be built using either Maven or Gradle, Maven is recommended as we use it during development.  
 Currently the resulting jar is targeted to Java version 1.8, thus you need it for build process,  
@@ -15,7 +15,7 @@ Install it and run:
 ```agsl
 mvn clean package
 ```
-Look for resulting JAR in the spark-greenplum-connector/target/ folder.
+Look for resulting JAR in the connector module `target/` folder.
 Also there is `install` target which will copy the resulting file into /home/hadoop/spark/jars/ directory.
 
 ## Gradle
@@ -28,4 +28,4 @@ After you have a **gradlew** script in your source tree root folder, run:
 ```bash
 ./gradlew shadowJar
 ```
-The result should appear in the spark-greenplum-connector/build/libs/ folder.
+The result should appear in the connector module `build/libs/` folder.

@@ -1,3 +1,5 @@
+import java.sql.DriverManager
+
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.functions._
 
@@ -18,11 +20,11 @@ import org.apache.spark.sql.functions._
  *   --conf spark.sql.catalog.local=org.apache.iceberg.spark.SparkCatalog \
  *   --conf spark.sql.catalog.local.type=hadoop \
  *   --conf spark.sql.catalog.local.warehouse=/tmp/iceberg-warehouse \
- *   --jars ./spark-greenplum-connector_2.12-3.1.jar
+ *   --jars ./spark-ymatrix-connector_2.12-3.1.jar
  *
- * scala> :load examples/iceberg-to-greenplum-bulk-load.scala
+ * scala> :load examples/iceberg-to-ymatrix-bulk-load.scala
  *
- * The script copies historical rows from Iceberg into Greenplum table by table.
+ * The script copies historical rows from Iceberg into YMatrix table by table.
  * Resume is supported by comparing max(ingest_id) between source and target.
  */
 
@@ -31,21 +33,21 @@ import spark.implicits._
 val icebergNamespace = "local.test_db"
 val icebergTablePrefix = "iot_wide_"
 
-val gpUrl = "jdbc:postgresql://172.16.100.29:5432/zhangchen"
-val gpUser = "zhangchen"
-val gpPassword = "YMatrix@123"
-val gpSchema = "public"
-val gpTablePrefix = "iot_wide_"
+val ymatrixUrl = "jdbc:postgresql://172.16.100.29:5432/zhangchen"
+val ymatrixUser = "zhangchen"
+val ymatrixPassword = "YMatrix@123"
+val ymatrixSchema = "public"
+val ymatrixTablePrefix = "iot_wide_"
 
 val tableStartIndex = 1
 val tableCount = 10
 val rowsPerBatch = 200000L
 val writePartitions = 8
 
-val gpNetworkTimeout = "120s"
-val gpServerTimeout = "120s"
-val gpDbMessages = "WARN"
-val gpDistributedBy = "(ingest_id)"
+val ymatrixNetworkTimeout = "120s"
+val ymatrixServerTimeout = "120s"
+val ymatrixDbMessages = "WARN"
+val ymatrixDistributedBy = "ingest_id"
 
 require(tableCount > 0, "tableCount must be positive")
 require(rowsPerBatch > 0, "rowsPerBatch must be positive")
@@ -105,29 +107,53 @@ def icebergTableName(tableNo: Int): String = {
 }
 
 def gpTableName(tableNo: Int): String = {
-  f"${gpTablePrefix}${tableNo}%04d"
+  f"${ymatrixTablePrefix}${tableNo}%04d"
 }
 
-def gpRead(query: String): DataFrame = {
+def ymatrixRead(query: String): DataFrame = {
   spark.read
-    .format("its-greenplum")
-    .option("url", gpUrl)
-    .option("user", gpUser)
-    .option("password", gpPassword)
+    .format("its-ymatrix")
+    .option("url", ymatrixUrl)
+    .option("user", ymatrixUser)
+    .option("password", ymatrixPassword)
     .option("dbtable", query)
     .load()
 }
 
-def gpTableExists(tableName: String): Boolean = {
-  val existsQuery =
-    s"""
-       |select count(*)::bigint as table_cnt
-       |from pg_catalog.pg_tables
-       |where schemaname = '${gpSchema}'
-       |  and tablename = '${tableName}'
-       |""".stripMargin
+def withYMatrixConnection[T](f: java.sql.Connection => T): T = {
+  val conn = DriverManager.getConnection(ymatrixUrl, ymatrixUser, ymatrixPassword)
+  try f(conn)
+  finally conn.close()
+}
 
-  gpRead(existsQuery).as[Long].head() > 0L
+def quoteIdent(ident: String): String = {
+  "\"" + ident.replace("\"", "\"\"") + "\""
+}
+
+def ymatrixTableExists(tableName: String): Boolean = {
+  withYMatrixConnection { conn =>
+    val sql =
+      """
+        |select count(*)::bigint
+        |from pg_catalog.pg_tables
+        |where schemaname = ?
+        |  and tablename = ?
+        |""".stripMargin
+
+    val stmt = conn.prepareStatement(sql)
+    try {
+      stmt.setString(1, ymatrixSchema)
+      stmt.setString(2, tableName)
+      val rs = stmt.executeQuery()
+      try {
+        rs.next() && rs.getLong(1) > 0L
+      } finally {
+        rs.close()
+      }
+    } finally {
+      stmt.close()
+    }
+  }
 }
 
 def currentIcebergMaxIngestId(fullTableName: String): Long = {
@@ -137,13 +163,24 @@ def currentIcebergMaxIngestId(fullTableName: String): Long = {
     .head()
 }
 
-def currentGreenplumMaxIngestId(tableName: String): Long = {
-  if (!gpTableExists(tableName)) {
+def currentYMatrixMaxIngestId(tableName: String): Long = {
+  if (!ymatrixTableExists(tableName)) {
     0L
   } else {
-    gpRead(s"select coalesce(max(ingest_id), 0)::bigint as max_ingest_id from ${gpSchema}.${tableName}")
-      .as[Long]
-      .head()
+    withYMatrixConnection { conn =>
+      val qualifiedTable = s"${quoteIdent(ymatrixSchema)}.${quoteIdent(tableName)}"
+      val stmt = conn.prepareStatement(s"select coalesce(max(ingest_id), 0)::bigint from ${qualifiedTable}")
+      try {
+        val rs = stmt.executeQuery()
+        try {
+          if (rs.next()) rs.getLong(1) else 0L
+        } finally {
+          rs.close()
+        }
+      } finally {
+        stmt.close()
+      }
+    }
   }
 }
 
@@ -154,18 +191,18 @@ def buildBatch(fullTableName: String, startId: Long, endIdInclusive: Long): Data
     .repartition(writePartitions)
 }
 
-def writeBatchToGreenplum(batchDf: DataFrame, tableName: String): Unit = {
+def writeBatchToYMatrix(batchDf: DataFrame, tableName: String): Unit = {
   batchDf.write
-    .format("its-greenplum")
-    .option("url", gpUrl)
-    .option("user", gpUser)
-    .option("password", gpPassword)
-    .option("dbschema", gpSchema)
+    .format("its-ymatrix")
+    .option("url", ymatrixUrl)
+    .option("user", ymatrixUser)
+    .option("password", ymatrixPassword)
+    .option("dbschema", ymatrixSchema)
     .option("dbtable", tableName)
-    .option("distributedby", gpDistributedBy)
-    .option("network.timeout", gpNetworkTimeout)
-    .option("server.timeout", gpServerTimeout)
-    .option("dbmessages", gpDbMessages)
+    .option("distributedby", ymatrixDistributedBy)
+    .option("network.timeout", ymatrixNetworkTimeout)
+    .option("server.timeout", ymatrixServerTimeout)
+    .option("dbmessages", ymatrixDbMessages)
     .mode("append")
     .save()
 }
@@ -180,10 +217,10 @@ def copyTable(tableNo: Int): Unit = {
     return
   }
 
-  val targetMaxIngestId = currentGreenplumMaxIngestId(targetTable)
+  val targetMaxIngestId = currentYMatrixMaxIngestId(targetTable)
   if (targetMaxIngestId >= sourceMaxIngestId) {
     println(
-      s"[skip] ${sourceTable} already copied to ${gpSchema}.${targetTable}, " +
+      s"[skip] ${sourceTable} already copied to ${ymatrixSchema}.${targetTable}, " +
         s"gpMax=${targetMaxIngestId}, icebergMax=${sourceMaxIngestId}"
     )
     return
@@ -192,7 +229,7 @@ def copyTable(tableNo: Int): Unit = {
   var nextStartId = targetMaxIngestId + 1L
 
   println(
-    s"[table] copying ${sourceTable} -> ${gpSchema}.${targetTable}, " +
+    s"[table] copying ${sourceTable} -> ${ymatrixSchema}.${targetTable}, " +
       s"resumeFrom=${nextStartId}, sourceMax=${sourceMaxIngestId}"
   )
 
@@ -200,30 +237,30 @@ def copyTable(tableNo: Int): Unit = {
     val nextEndId = math.min(nextStartId + rowsPerBatch - 1L, sourceMaxIngestId)
     val batchDf = buildBatch(sourceTable, nextStartId, nextEndId)
 
-    writeBatchToGreenplum(batchDf, targetTable)
+    writeBatchToYMatrix(batchDf, targetTable)
 
     println(
-      s"[batch] ${sourceTable} -> ${gpSchema}.${targetTable}, " +
+      s"[batch] ${sourceTable} -> ${ymatrixSchema}.${targetTable}, " +
         s"rows=${nextEndId - nextStartId + 1L}, ingest_id=[${nextStartId}, ${nextEndId}]"
     )
 
     nextStartId = nextEndId + 1L
   }
 
-  val finalTargetMax = currentGreenplumMaxIngestId(targetTable)
+  val finalTargetMax = currentYMatrixMaxIngestId(targetTable)
   println(
-    s"[done] ${sourceTable} copied to ${gpSchema}.${targetTable}, " +
+    s"[done] ${sourceTable} copied to ${ymatrixSchema}.${targetTable}, " +
       s"finalGpMax=${finalTargetMax}, icebergMax=${sourceMaxIngestId}"
   )
 }
 
 println(
   s"""
-     |Iceberg -> Greenplum bulk load started.
+     |Iceberg -> YMatrix bulk load started.
      |icebergNamespace=${icebergNamespace}
      |icebergTablePrefix=${icebergTablePrefix}
-     |gpSchema=${gpSchema}
-     |gpTablePrefix=${gpTablePrefix}
+     |ymatrixSchema=${ymatrixSchema}
+     |ymatrixTablePrefix=${ymatrixTablePrefix}
      |tableStartIndex=${tableStartIndex}
      |tableCount=${tableCount}
      |rowsPerBatch=${rowsPerBatch}
@@ -233,4 +270,4 @@ println(
 
 (tableStartIndex until tableStartIndex + tableCount).foreach(copyTable)
 
-println("Iceberg -> Greenplum bulk load finished.")
+println("Iceberg -> YMatrix bulk load finished.")

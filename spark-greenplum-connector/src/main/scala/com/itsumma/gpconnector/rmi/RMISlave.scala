@@ -122,6 +122,29 @@ object RMISlave {
   //InetAddress.getLocalHost.getHostAddress
   private val inetAddress: InetAddress = InetAddress.getByName(
     InetAddress.getByName(NetUtils().resolveHost2Ip(localIpAddress)).getHostName)
+  def isBenignRemoteShutdown(ex: Throwable): Boolean = {
+    var cur = ex
+    while (cur != null) {
+      cur match {
+        case _: java.rmi.NoSuchObjectException => return true
+        case _: java.rmi.ConnectException => return true
+        case _: java.rmi.ConnectIOException => return true
+        case _: java.rmi.UnmarshalException => return true
+        case _: java.io.EOFException => return true
+        case sock: java.net.SocketException =>
+          val msg = Option(sock.getMessage).getOrElse("")
+          if (msg.contains("Broken pipe") || msg.contains("Connection reset") || msg.contains("Socket closed"))
+            return true
+        case marshal: java.rmi.MarshalException =>
+          val msg = Option(marshal.getMessage).getOrElse("")
+          if (msg.contains("Broken pipe") || msg.contains("Connection reset") || msg.contains("Socket closed"))
+            return true
+        case _ =>
+      }
+      cur = cur.getCause
+    }
+    false
+  }
   val serverSocketFactory: ServerSocketFactory = ServerSocketFactory(inetAddress)
   val clientSocketFactory: ClientSocketFactory = ClientSocketFactory(inetAddress)
 }
@@ -392,6 +415,9 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
     } catch {
       case e: java.rmi.NoSuchObjectException =>
         logInfo(s"handlerAsks('commit',pcb) called with server that is already shut down: pcb=${pcb}")
+      case e: Exception if RMISlave.isBenignRemoteShutdown(e) =>
+        logInfo(s"handlerAsks('commit',pcb) completed after remote shutdown: pcb=${pcb}, " +
+          s"${e.getClass.getCanonicalName}: ${e.getMessage}")
     }
     writerReady.set(true)
     rmiDataTargetGuard.synchronized {
@@ -456,6 +482,9 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
     } catch {
       case e: java.rmi.NoSuchObjectException =>
         logInfo(s"server.disconnect(pcb) called with server that is already shut down: pcb=${pcb}")
+      case e: Exception if RMISlave.isBenignRemoteShutdown(e) =>
+        logDebug(s"server.disconnect(pcb) ignored after remote shutdown: pcb=${pcb}, " +
+          s"${e.getClass.getCanonicalName}: ${e.getMessage}")
       case e: Exception => logWarning(s"server.disconnect(pcb) failed: pcb=${pcb}, ${e}")
     }
     server = null

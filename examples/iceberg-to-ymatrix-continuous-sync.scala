@@ -14,15 +14,15 @@ import org.apache.spark.sql.functions._
  *   --conf spark.driver.host=172.16.100.32 \
  *   --conf spark.driver.bindAddress=0.0.0.0 \
  *   --conf spark.local.ip=172.16.100.32 \
- *   --jars ./spark-greenplum-connector_2.12-3.1.jar
+ *   --jars ./spark-ymatrix-connector_2.12-3.1.jar
  *
  * Then load this script:
- * scala> :load examples/iceberg-to-greenplum-continuous-sync.scala
+ * scala> :load examples/iceberg-to-ymatrix-continuous-sync.scala
  *
  * The script keeps appending synthetic rows into an Iceberg table and then
- * incrementally copies the new rows into Greenplum.
+ * incrementally copies the new rows into YMatrix.
  *
- * Before running the sync loop, create the target table in Greenplum:
+ * Before running the sync loop, create the target table in YMatrix:
  *
  * create table public.iceberg_sync_demo (
  *   order_id bigint,
@@ -39,11 +39,11 @@ import spark.implicits._
 val icebergNamespace = "local.test_db"
 val icebergTable = s"${icebergNamespace}.orders_demo"
 
-val gpUrl = "jdbc:postgresql://172.16.100.29:5432/zhangchen"
-val gpUser = "zhangchen"
-val gpPassword = "YMatrix@123"
-val gpSchema = "public"
-val gpTable = "iceberg_sync_demo"
+val ymatrixUrl = "jdbc:postgresql://172.16.100.29:5432/zhangchen"
+val ymatrixUser = "zhangchen"
+val ymatrixPassword = "YMatrix@123"
+val ymatrixSchema = "public"
+val ymatrixTable = "iceberg_sync_demo"
 
 val rowsPerBatch = 10L
 val pauseSeconds = 5
@@ -63,7 +63,12 @@ spark.sql(
 )
 
 println(s"Iceberg table ready: ${icebergTable}")
-println(s"Greenplum target table: ${gpSchema}.${gpTable}")
+println(s"YMatrix target table: ${ymatrixSchema}.${ymatrixTable}")
+
+def firstLongValue(df: org.apache.spark.sql.DataFrame, columnName: String): Long = {
+  val row = df.select(col(columnName).cast("long")).head()
+  if (row == null || row.isNullAt(0)) 0L else row.getLong(0)
+}
 
 def appendIcebergBatch(startOrderId: Long, batchId: Long, batchSize: Long): Long = {
   val batchTs = Timestamp.from(Instant.now())
@@ -99,12 +104,12 @@ def syncIcebergIncrement(lastSyncedOrderId: Long): Long = {
   val newHighWatermark = incrDf.agg(max("order_id")).as[Long].head()
 
   incrDf.write
-    .format("its-greenplum")
-    .option("url", gpUrl)
-    .option("user", gpUser)
-    .option("password", gpPassword)
-    .option("dbschema", gpSchema)
-    .option("dbtable", gpTable)
+    .format("its-ymatrix")
+    .option("url", ymatrixUrl)
+    .option("user", ymatrixUser)
+    .option("password", ymatrixPassword)
+    .option("dbschema", ymatrixSchema)
+    .option("dbtable", ymatrixTable)
     .option("server.port", "43000")
     .option("network.timeout", "20s")
     .option("server.timeout", "20s")
@@ -113,7 +118,7 @@ def syncIcebergIncrement(lastSyncedOrderId: Long): Long = {
     .save()
 
   incrDf.unpersist()
-  println(s"[sync] copied ${rowCount} rows to ${gpSchema}.${gpTable}, highWatermark=${newHighWatermark}")
+  println(s"[sync] copied ${rowCount} rows to ${ymatrixSchema}.${ymatrixTable}, highWatermark=${newHighWatermark}")
   newHighWatermark
 }
 
@@ -125,15 +130,16 @@ var nextOrderId = (
 )
 
 var lastSyncedOrderId = (
-  spark.read
-    .format("its-greenplum")
-    .option("url", gpUrl)
-    .option("user", gpUser)
-    .option("password", gpPassword)
-    .option("dbtable", s"select coalesce(max(order_id), 0) as max_order_id from ${gpSchema}.${gpTable}")
-    .load()
-    .as[Long]
-    .head()
+  firstLongValue(
+    spark.read
+      .format("its-ymatrix")
+      .option("url", ymatrixUrl)
+      .option("user", ymatrixUser)
+      .option("password", ymatrixPassword)
+      .option("dbtable", s"select coalesce(max(order_id), 0) as max_order_id from ${ymatrixSchema}.${ymatrixTable}")
+      .load(),
+    "max_order_id"
+  )
 )
 
 println(s"Initial nextOrderId=${nextOrderId}, lastSyncedOrderId=${lastSyncedOrderId}")

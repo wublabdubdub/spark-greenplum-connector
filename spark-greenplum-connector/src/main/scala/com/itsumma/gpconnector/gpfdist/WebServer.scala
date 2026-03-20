@@ -53,6 +53,7 @@ class WebServer(port: Int, rmiSlave: RMISlave, jobAbort: AtomicBoolean, transfer
   private val activeWriters = MutableHashMap[String, Int]()
   private val segmentQueues = MutableHashMap[String, Array[Byte]]()
   private val segPass = MutableHashMap[String, Int]()
+  private var getTail = Array.emptyByteArray
 
   if (!rmiSlave.segService)
     throw new Exception(s"WebServer instance holder should be marked as service provider in its segment")
@@ -72,6 +73,47 @@ class WebServer(port: Int, rmiSlave: RMISlave, jobAbort: AtomicBoolean, transfer
         sb.append(String.format("%02x ", Byte.box(b)))
       }
       sb.toString
+    }
+
+    private def nextReadableChunk(msMax: Long): Array[Byte] = me.synchronized {
+      var chunk: Array[Byte] = null
+      var done = false
+
+      while (!done && !jobAbort.get()) {
+        val data = progressTracker.trackProgress("rmiGetMs") {
+          rmiSlave.read(msMax)
+        }
+
+        if (data == null) {
+          if (getTail.nonEmpty) {
+            logError(s"GET stream ended with a truncated row buffered (${getTail.length} bytes)")
+            jobAbort.set(true)
+            getTail = Array.emptyByteArray
+          }
+          done = true
+        } else {
+          val bytes = data.array().slice(0, data.position())
+          rmiSlave.recycleBuffer(data)
+
+          val merged =
+            if (getTail.isEmpty) bytes
+            else getTail ++ bytes
+
+          val eolIx = merged.lastIndexOf(0x0a.toByte)
+          if (eolIx >= 0) {
+            chunk = merged.slice(0, eolIx + 1)
+            getTail =
+              if (eolIx < merged.length - 1) merged.slice(eolIx + 1, merged.length)
+              else Array.emptyByteArray
+            done = true
+          } else {
+            // Keep buffering until we have at least one full row terminated by LF.
+            getTail = merged
+          }
+        }
+      }
+
+      chunk
     }
 
     override def handle(exchange: HttpExchange): Unit = {
@@ -105,22 +147,16 @@ class WebServer(port: Int, rmiSlave: RMISlave, jobAbort: AtomicBoolean, transfer
         logInfo(s"GET for GP segment ${segmentId} enter")
         val os = exchange.getResponseBody
         val start = System.currentTimeMillis() // System.nanoTime() //
-        var data = progressTracker.trackProgress("rmiGetMs") {
-          rmiSlave.read(10000)
-        }
         var nBytes: Long = 0
         var nChunks: Long = 0
-        while ((data != null) && (data.position() > 0)) {
-          //os.write(data.getBytes(StandardCharsets.UTF_8))
+        var data = nextReadableChunk(10000)
+        while ((data != null) && data.nonEmpty) {
           nChunks += 1
-          nBytes += data.position()
+          nBytes += data.length
           progressTracker.trackProgress("webWriteMs") {
-            os.write(data.array(), 0, data.position())
+            os.write(data, 0, data.length)
           }
-          progressTracker.trackProgress("rmiGetMs") {
-            rmiSlave.recycleBuffer(data)
-            data = rmiSlave.read(10000)
-          }
+          data = nextReadableChunk(10000)
         }
         progressTracker.trackProgress("webWriteMs") {
           os.flush()

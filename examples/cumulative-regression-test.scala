@@ -23,11 +23,11 @@ case class LoopRead(opts: Map[String, String]) {
         while (cnt < 5) {
             cnt += 1
             val cmd = s"SELECT * FROM uuid_seq limit ${cnt + 5}"
-            val gpdf = spark.read.format("its-greenplum").options(opts.updated("dbtable", cmd)).load()
+            val ymatrixDf = spark.read.format("its-ymatrix").options(opts.updated("dbtable", cmd)).load()
             println("\r\n*************************************************")
             println(s"Should display ${cnt + 5} rows from uuid_seq table")
             println("*************************************************")
-            gpdf.show(false)
+            ymatrixDf.show(false)
         }
     }
 }
@@ -44,7 +44,7 @@ case class LoopWrite(opts: Map[String, String]) {
                 parallelize(Array.fill[String](1000){randomUUID().toString}.zipWithIndex.map({case (uid,id) => {(uid, id, java.sql.Timestamp.from(OffsetDateTime.now().toInstant), id % 2 == 1)}}), 2).
                 toDF("id", "seq_no", "created_d", "mv").
             write.
-                format("its-greenplum").
+                format("its-ymatrix").
                 options(opts.updated("dbtable","uuid_seq_3")).
                 mode(SaveMode.Append).
                 save()
@@ -54,7 +54,7 @@ case class LoopWrite(opts: Map[String, String]) {
 }
 
 //sc.setLogLevel("INFO")
-val options = Map("url"->"jdbc:postgresql://greenplum-master-host:5432/db-name", "user"->"your_gp_db_user", "password"->"gp_user_password", "dbtable"->"uuid_seq")
+val options = Map("url"->"jdbc:postgresql://ymatrix-master-host:5432/db-name", "user"->"your_ymatrix_db_user", "password"->"ymatrix_user_password", "dbtable"->"uuid_seq")
 
 var df = sc.
     parallelize(Array.fill[String](1000){randomUUID().toString}.zipWithIndex.map({case (uid,id) => {(uid, id, java.sql.Timestamp.from(OffsetDateTime.now().toInstant), id % 2 == 1)}}), 2).
@@ -63,45 +63,45 @@ println("\r\n*************************************************")
 println("Should append 1000 rows into uuid_seq table")
 println("*************************************************")
 df.write.
-    format("its-greenplum").
+    format("its-ymatrix").
     options(options).
     mode(SaveMode.Append).
     save()
 
-var gpdf = spark.read.format("its-greenplum").options(options).load()
+var ymatrixDf = spark.read.format("its-ymatrix").options(options).load()
 println("\r\n*************************************************")
 println("Should display 20 rows from uuid_seq table")
 println("*************************************************")
-gpdf.show(false)
-gpdf.count()
+ymatrixDf.show(false)
+ymatrixDf.count()
 
 println("\r\n*************************************************")
 println("Should copy uuid_seq table into uuid_seq_2 recreating the later")
 println("*************************************************")
-gpdf.write.format("its-greenplum").options(options.updated("dbtable","uuid_seq_2")).mode("overwrite").save()
+ymatrixDf.write.format("its-ymatrix").options(options.updated("dbtable","uuid_seq_2")).mode("overwrite").save()
 
 println("\r\n*************************************************")
 println("Should copy uuid_seq table into uuid_seq_2 recreating the later")
 println("*************************************************")
-gpdf.repartition(7).write.format("its-greenplum").options(options.updated("dbtable","uuid_seq_2")).mode("overwrite").save()
+ymatrixDf.repartition(7).write.format("its-ymatrix").options(options.updated("dbtable","uuid_seq_2")).mode("overwrite").save()
 
-//gpdf.repartition(col("created_d")).write.format("its-greenplum").options(options.updated("dbtable","uuid_seq_2")).mode("overwrite").save()
+//ymatrixDf.repartition(col("created_d")).write.format("its-ymatrix").options(options.updated("dbtable","uuid_seq_2")).mode("overwrite").save()
 
-gpdf = spark.read.format("its-greenplum").options(options.updated("dbtable","select * from uuid_seq where seq_no < 0")).load()
+ymatrixDf = spark.read.format("its-ymatrix").options(options.updated("dbtable","select * from uuid_seq where seq_no < 0")).load()
 println("\r\n*************************************************")
 println("Should display empty rowset und recreate uuid_seq_3 empty table")
 println("*************************************************")
-gpdf.show(false)
-gpdf.count()
-gpdf.write.format("its-greenplum").options(options.updated("dbtable","uuid_seq_3")).mode("overwrite").save()
+ymatrixDf.show(false)
+ymatrixDf.count()
+ymatrixDf.write.format("its-ymatrix").options(options.updated("dbtable","uuid_seq_3")).mode("overwrite").save()
 
-gpdf = spark.read.format("its-greenplum").options(options.updated("dbtable","SELECT * FROM uuid_seq limit 1")).load()
+ymatrixDf = spark.read.format("its-ymatrix").options(options.updated("dbtable","SELECT * FROM uuid_seq limit 1")).load()
 println("\r\n*************************************************")
 println("Should display 1 row and append it to uuid_seq_4 table")
 println("*************************************************")
-gpdf.show(false)
-gpdf.count()
-gpdf.write.format("its-greenplum").options(options.updated("dbtable","uuid_seq_4")).mode("append").save()
+ymatrixDf.show(false)
+ymatrixDf.count()
+ymatrixDf.write.format("its-ymatrix").options(options.updated("dbtable","uuid_seq_4")).mode("append").save()
 
 
 LoopRead(options).run()
