@@ -14,7 +14,7 @@ import java.util
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 //import java.rmi.Naming
 import java.rmi.server.{UnicastRemoteObject, Unreferenced}
-import scala.collection.mutable.{Queue => MutableQueue, Set => MutableSet}
+import scala.collection.mutable.{HashMap => MutableHashMap, Queue => MutableQueue, Set => MutableSet}
 import org.apache.spark.TaskContext
 
 import java.rmi.registry.{LocateRegistry, Registry}
@@ -202,9 +202,10 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
       null
   }
   // private var partList: Set[ITSIpcClient] = Set[ITSIpcClient]() //server.participantsList(instanceSegmentId)
-  private val localWriteBufferGuard: Boolean = false
+  private val localWriteBufferGuard: AnyRef = new Object()
   private var buffExchange: BufferExchange = new BufferExchange(optionsFactory.bufferSize)
   private val dataProviders: MutableSet[ITSIpcClient] = MutableSet[ITSIpcClient]()
+  private val providerTails: MutableHashMap[String, Array[Byte]] = MutableHashMap[String, Array[Byte]]()
   private val transactionStarted: LocalEvent = new LocalEvent(true, name = "trnStart")
   private val providersDisconnected: LocalEvent = new LocalEvent(true, "srcDone")
   private val nSourcesPlan: AtomicInteger = new AtomicInteger(0)
@@ -319,7 +320,7 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
   }
 
   private val firstRow: AtomicBoolean = new AtomicBoolean(true)
-  private val rmiDataTargetGuard: Boolean = false
+  private val rmiDataTargetGuard: AnyRef = new Object()
   private var rmiDataTarget: ITSIpcClient = null
   private var rmiDataTargetInstId: String = null
   private var rmiThis: ITSIpcClient = this.asInstanceOf[ITSIpcClient]
@@ -510,6 +511,7 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
       }
     }
     dataProviders.clear()
+    providerTails.clear()
     logInfo(s"stop took: ${progressTracker.reportTimeTaken()}")
     rmiLoopMs
   }
@@ -632,6 +634,13 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
       s"\narg provider=${sender}," +
       s"\nlist (size ${dataProviders.size})")
     if (dataProviders.contains(sender)) {
+      val senderId = sender.name
+      val tail = providerTails.getOrElse(senderId, Array.emptyByteArray)
+      if (tail.nonEmpty) {
+        jobAbort.set(true)
+        throw new Exception(s"Provider ${senderId} closed with a truncated row tail (${tail.length} bytes)")
+      }
+      providerTails -= senderId
       dataProviders -= sender
       //      if (sender != rmiThis) {
       nSourcesDone.incrementAndGet()
@@ -654,6 +663,30 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
     putLocal(sender, data)
   }
 
+  private def splitCompleteRows(sender: ITSIpcClient, data: Array[Byte]): (Array[Byte], Array[Byte]) = {
+    val senderId = sender.name
+    val prevTail = providerTails.getOrElse(senderId, Array.emptyByteArray)
+    val merged =
+      if (prevTail.isEmpty) data
+      else prevTail ++ data
+
+    val eolIx = merged.lastIndexOf('\n'.toByte)
+    if (eolIx < 0) {
+      providerTails.put(senderId, merged)
+      return (Array.emptyByteArray, merged)
+    }
+
+    val ready = merged.slice(0, eolIx + 1)
+    val tail =
+      if (eolIx < merged.length - 1) merged.slice(eolIx + 1, merged.length)
+      else Array.emptyByteArray
+
+    if (tail.nonEmpty) providerTails.put(senderId, tail)
+    else providerTails -= senderId
+
+    (ready, tail)
+  }
+
   private def putLocal(sender: ITSIpcClient, data: Array[Byte]): Boolean = this.synchronized {
     if (!dataProviders.contains(sender)) {
       logTrace(s"putLocal adding provider ${sender}")
@@ -662,7 +695,12 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
         providersDisconnected.reset()
       }
     }
-    buffExchange.put(data)
+    val payload =
+      if (sender == rmiThis) data
+      else splitCompleteRows(sender, data)._1
+    if (payload.nonEmpty) {
+      buffExchange.put(payload)
+    }
     writerReady.set(true)
     true
   }

@@ -26,9 +26,9 @@
 
 ## 1. 概述
 
-### 1.1 它是什么
+### 1.1 组件说明
 
-本项目是一个 Spark DataSource V2 Connector。对于开发人员而言，它的本质不是一个单独的“迁移程序”，而是一个可以直接嵌入 Spark 作业中的数据读写组件。
+本项目是一个 Spark DataSource V2 Connector，可直接嵌入 Spark 作业，用于读写 YMatrix。
 
 在 Iceberg 到 YMatrix 的场景中，标准开发链路如下：
 
@@ -42,11 +42,9 @@
 .format("its-ymatrix")
 ```
 
-也就是说，目标虽然是 YMatrix，但当前仓库中的接入格式、参数模型和读写方式，都统一按 YMatrix 接口来使用。
+### 1.2 适用问题
 
-### 1.2 它解决什么问题
-
-在开发实践中，Iceberg 到 YMatrix 的迁移通常会遇到以下问题：
+Iceberg 到 YMatrix 的迁移通常涉及以下开发问题：
 
 - 需要在 Spark 内部直接完成离线迁移，不希望额外引入独立同步系统
 - 需要按业务字段进行过滤、重命名、映射和类型转换
@@ -54,13 +52,11 @@
 - 需要将迁移逻辑写成标准 Spark 作业，而不是临时脚本堆砌
 - 需要在 Spark 内直接完成结果校验与联调
 
-本 connector 适合解决的正是上述“开发内嵌式迁移”问题。
+本 connector 用于处理上述 Spark 作业内嵌式迁移场景。
 
-### 1.3 它不是什么
+### 1.3 边界
 
-为了避免误用，需要先明确边界。
-
-本 connector 不是：
+本 connector 不提供以下能力：
 
 - 自动 CDC 平台
 - 自动元数据同步平台
@@ -68,15 +64,13 @@
 - 自动去重补偿平台
 - 自动增量语义保障平台
 
-也就是说，字段映射、幂等控制、水位推进、重跑策略、目标表治理，仍然需要由开发代码或外围流程来承担。
+字段映射、幂等控制、水位推进、重跑策略和目标表治理仍需由开发代码或外围流程实现。
 
 ## 2. 核心定位与典型场景
 
-### 2.1 核心定位
+### 2.1 组件定位
 
-从架构定位上看，这个 connector 更像一个“Spark 到 YMatrix 的高性能写入组件”，而不是一套封闭的迁移产品。
-
-开发人员可以把它理解成三层结构中的最底层一层：
+从架构上看，这个 connector 处于 Spark 到 YMatrix 写入链路中的连接层：
 
 ```text
 +-------------------------------------------------------------+
@@ -95,25 +89,23 @@
 
 典型场景包括：
 
-| 场景 | 是否适合 | 说明 |
+| 场景 | 支持情况 | 说明 |
 |---|---|---|
-| 单表一次性迁移 | 适合 | 适合开发验证和小规模上线 |
-| 多表批量回灌 | 适合 | 可配合脚本按表循环执行 |
-| 大表按水位字段分批迁移 | 适合 | 推荐采用 `ingest_id`、`order_id` 等单调字段 |
-| 增量同步演示 | 适合 | 可基于业务水位做简化同步 |
-| 强一致 CDC | 不适合直接承担 | 需要外围机制配合 |
-| 自动 DDL 治理 | 不适合直接承担 | 需要开发侧自行约束 |
+| 单表一次性迁移 | 支持 | 可用于开发验证和小规模上线 |
+| 多表批量回灌 | 支持 | 可配合脚本按表循环执行 |
+| 大表按水位字段分批迁移 | 支持 | 通常使用 `ingest_id`、`order_id` 等单调字段 |
+| 增量同步演示 | 支持 | 可基于业务水位做简化同步 |
+| 强一致 CDC | 不直接提供 | 需要外围机制配合 |
+| 自动 DDL 治理 | 不直接提供 | 需要开发侧自行约束 |
 
-### 2.3 推荐使用方式
+### 2.3 使用顺序
 
-推荐做法：
+典型使用顺序如下：
 
 1. 先用最小 Demo 验证环境和权限
 2. 再用单表迁移模板验证字段映射和类型兼容
-3. 再上分批迁移或多表迁移
-4. 最后再做增量同步或持续运行任务
-
-不推荐一开始直接把全部业务表一次性迁移到正式环境。
+3. 再执行分批迁移或多表迁移
+4. 最后再实现增量同步或持续运行任务
 
 ## 3. 架构与核心概念
 
@@ -157,7 +149,7 @@
 
 `dbschema` 用于指定目标 schema。当前实现中，如果 schema 不存在，connector 会尝试自动创建。
 
-这意味着在开发阶段可以降低初次接入门槛，但在生产环境中仍建议预先规划 schema，而不是完全依赖自动创建。
+这意味着开发阶段可以降低初次接入门槛；生产环境通常需要预先规划 schema。
 
 #### 3.2.2 `dbtable`
 
@@ -169,10 +161,10 @@
 
 `distributedby` 影响目标表在 YMatrix 中的分布方式。它不是普通参数，而是直接决定后续数据分布、倾斜情况和部分查询性能的关键参数。
 
-推荐原则：
+分布键选择条件：
 
-- 优先选高基数字段
-- 优先选写入与查询都较稳定的字段
+- 选择高基数字段
+- 选择写入与查询都较稳定的字段
 - 避免明显热点字段
 
 #### 3.2.4 `mode("append")` 与 `mode("overwrite")`
@@ -219,24 +211,9 @@
 | YMatrix | 已可通过 JDBC 正常连接 |
 | 网络 | YMatrix segment 可访问 Spark Worker |
 
-### 4.2 为什么网络要求严格
+### 4.3 统一环境变量
 
-当前 connector 使用 GPFDIST 协议做数据传输。它不是简单的“Driver 通过 JDBC 一条条写入”，而是由 Spark 侧和 YMatrix 侧协同完成更高吞吐的数据交换。
-
-因此，网络要求比普通 JDBC 写入更严格：
-
-- 不是只有 Driver 能连 YMatrix 就够了
-- YMatrix segment 也必须能够反向访问 Spark Worker 暴露的数据服务
-
-如果这一点不满足，开发时会看到的现象通常不是“SQL 错误”，而是：
-
-- 任务长时间等待
-- 连接超时
-- GPFDIST 无法建立会话
-
-### 4.3 建议的统一环境变量
-
-为了让本文中的所有 Demo 尽量可直接复现，建议先统一环境变量：
+本文中的示例统一使用以下环境变量：
 
 ```bash
 export CONNECTOR_JAR=/path/to/spark-ymatrix-connector_2.12-3.1.jar
@@ -249,7 +226,7 @@ export ICEBERG_WAREHOUSE=/tmp/iceberg-warehouse
 export SPARK_LOCAL_IP=127.0.0.1
 ```
 
-### 4.4 推荐的 `spark-shell` 启动模板
+### 4.4 `spark-shell` 启动模板
 
 ```bash
 spark-shell \
@@ -265,9 +242,9 @@ spark-shell \
   --jars ${CONNECTOR_JAR}
 ```
 
-### 4.5 启动后的第一轮自检
+### 4.5 启动后的自检
 
-进入 `spark-shell` 后，推荐先执行以下命令：
+进入 `spark-shell` 后可先执行以下命令：
 
 ```scala
 val catalog = sys.env.getOrElse("ICEBERG_CATALOG", "local")
@@ -276,13 +253,13 @@ println(sys.env.getOrElse("YMATRIX_URL", "YMATRIX_URL_NOT_SET"))
 println(s"catalog = $catalog")
 ```
 
-如果这里已经失败，说明问题还在环境层，而不是迁移逻辑层。
+如果这里失败，问题仍位于环境层。
 
 ## 5. 快速开始
 
 ### 5.1 最小接入代码模型
 
-开发时最重要的不是记住所有参数，而是先记住最小代码模型：
+最小接入代码模型如下：
 
 ```scala
 spark.table("catalog.db.source_table")
@@ -297,29 +274,65 @@ spark.table("catalog.db.source_table")
   .save()
 ```
 
-这个模型表达了整个开发本质：
+该模型包含以下技术要点：
 
 - 源侧是 Spark DataFrame
 - 目标侧是 `its-ymatrix` sink
-- 迁移逻辑发生在 Spark 中
+- 字段选择、过滤、转换和重分区发生在 Spark 中
 
-### 5.2 开发接入的最小参数集
+### 5.2 SQL 接入模型：`CREATE TEMPORARY VIEW` + `INSERT INTO`
 
-| 参数 | 是否建议必填 | 说明 |
+在启用 Iceberg `SparkCatalog` 的环境中，`CREATE TABLE ... USING its-ymatrix` 会进入 catalog create-table 流程，不适合作为当前 connector 的 SQL 接入方式。可用的 SQL 方式是先创建临时 sink view，再执行 `INSERT INTO TABLE ... SELECT ...`。
+
+```scala
+spark.sql("DROP VIEW IF EXISTS ymatrix_sink")
+
+spark.sql(
+  """
+    |CREATE TEMPORARY VIEW ymatrix_sink
+    |USING com.itsumma.gpconnector.GreenplumDataSource
+    |OPTIONS (
+    |  url 'jdbc:postgresql://ymatrix-master-host:5432/your_database',
+    |  user 'database_user',
+    |  password 'yourpassword',
+    |  dbschema 'public',
+    |  dbtable 'target_table',
+    |  distributedby 'ingest_id',
+    |  network.timeout '120s',
+    |  server.timeout '120s',
+    |  dbmessages 'WARN'
+    |)
+    |""".stripMargin
+)
+
+spark.sql(
+  s"""
+     |INSERT INTO TABLE ymatrix_sink
+     |SELECT *
+     |FROM ${sys.env.getOrElse("ICEBERG_CATALOG", "local")}.test_db.iot_wide_0001
+     |""".stripMargin
+)
+```
+
+这个写法要求目标表已经存在，因为 `CREATE TEMPORARY VIEW` 会通过 provider 访问目标端并推断 schema。
+
+### 5.3 开发接入的最小参数集
+
+| 参数 | 参数角色 | 说明 |
 |---|---|---|
-| `url` | 是 | YMatrix JDBC 地址 |
-| `user` | 是 | 用户名 |
-| `password` | 是 | 密码 |
-| `dbschema` | 是 | 目标 schema |
-| `dbtable` | 是 | 目标表 |
-| `mode` | 是 | 建议明确为 `append` 或 `overwrite` |
-| `distributedby` | 强烈建议 | 自动建表时指定分布键 |
-| `network.timeout` | 建议 | 网络敏感环境建议显式设定 |
-| `server.timeout` | 建议 | 大批量传输建议显式设定 |
+| `url` | 必填 | YMatrix JDBC 地址 |
+| `user` | 必填 | 用户名 |
+| `password` | 必填 | 密码 |
+| `dbschema` | 必填 | 目标 schema |
+| `dbtable` | 必填 | 目标表 |
+| `mode` | 必填 | 写入模式，取值为 `append` 或 `overwrite` |
+| `distributedby` | 自动建表时填写 | 自动建表时指定分布键 |
+| `network.timeout` | 可选 | 网络敏感环境可显式设定 |
+| `server.timeout` | 可选 | 大批量传输时可显式设定 |
 
-### 5.3 第一优先级的开发原则
+### 5.4 开发控制项
 
-第一优先级不是“先把命令写长”，而是先保证三件事：
+开发代码至少需要明确以下三项：
 
 1. 源表字段清单明确
 2. 目标表写入模式明确
@@ -334,7 +347,7 @@ spark.table("catalog.db.source_table")
 
 #### 6.1.1 场景说明
 
-这是第一次联调时最推荐执行的示例。它验证的是最小闭环：
+这个示例用于验证最小闭环：
 
 - Spark 能写 Iceberg
 - Spark 能通过 connector 写 YMatrix
@@ -453,9 +466,9 @@ rowCount = 3
 
 #### 6.1.4 注意事项
 
-- 第一次联调优先用 `overwrite`
+- 首次联调通常使用 `overwrite`
 - 目标表若已存在旧结构，可能影响结果
-- 如需固定网络排查，优先显式指定 `server.port`
+- 如需固定网络排查，可显式指定 `server.port`
 
 ### 6.2 示例二：迁移已有 Iceberg 表
 
@@ -465,7 +478,7 @@ rowCount = 3
 
 #### 6.2.2 设计原则
 
-推荐先解释为什么不建议直接 `select("*")`：
+显式列清单与 `select("*")` 相比有以下特征：
 
 - 源表字段顺序可能变化
 - 后续新增列可能破坏目标表兼容性
@@ -610,11 +623,11 @@ wideDf.write
   .save()
 ```
 
-#### 6.2.4 推荐做法
+#### 6.2.4 实现要点
 
 - 对宽表显式维护字段列表
-- `repartition` 与 Spark 并发、YMatrix segment 数量一起评估
-- 初次迁移建议先跑小分区、小样本
+- `repartition` 需要与 Spark 并发和 YMatrix segment 数量一起评估
+- 首次迁移可使用较小分区数和较小样本验证链路
 
 ### 6.3 示例三：按范围迁移，先做灰度验证
 
@@ -635,7 +648,7 @@ val sourceTable = s"${catalog}.test_db.iot_wide_0001"
 
 // 读取源表后先按 ingest_id 范围过滤，再按 event_date 做日期过滤。
 val incrDf = spark.table(sourceTable)
-  // 只保留指定主键范围内的数据，适合做灰度验证。
+  // 只保留指定主键范围内的数据，用于灰度验证。
   .where(col("ingest_id").between(1L, 100000L))
   // 只保留指定日期之后的数据，模拟时间窗口迁移。
   .where(col("event_date") >= lit("2026-03-01"))
@@ -726,13 +739,13 @@ mappedDf.write
   .save()
 ```
 
-#### 6.4.3 推荐做法
+#### 6.4.3 实现约束
 
-推荐做法如下：
+字段映射实现要点如下：
 
 - 字段映射逻辑集中在一处维护
 - 对关键类型显式 `cast`
-- 对金额、时间、主键字段优先做严格映射
+- 对金额、时间、主键字段做严格映射
 
 ### 6.5 示例五：覆盖写入但保留目标表结构
 
@@ -762,7 +775,7 @@ spark.table(s"${catalog}.demo_db.orders_demo")
   .option("dbschema", sys.env.getOrElse("YMATRIX_SCHEMA", "public"))
   // 指定目标表名。
   .option("dbtable", "orders_demo")
-  // 告诉 connector 在 overwrite 时优先走 truncate，尽量保留表结构。
+  // 告诉 connector 在 overwrite 时使用 truncate，尽量保留表结构。
   .option("truncate", "true")
   // 使用覆盖模式。
   .mode("overwrite")
@@ -775,96 +788,147 @@ spark.table(s"${catalog}.demo_db.orders_demo")
 | 写法 | 行为特点 |
 |---|---|
 | `mode("overwrite")` | 可能删除并重建目标表 |
-| `mode("overwrite") + truncate=true` | 优先尝试保留表结构、仅清空数据 |
+| `mode("overwrite") + truncate=true` | 尝试保留表结构并清空数据 |
 
-### 6.6 示例六：先造 Iceberg 测试数据，再做批量迁移
+### 6.6 示例六：使用 `CREATE TEMPORARY VIEW` 迁移 Iceberg 表
 
 #### 6.6.1 场景说明
 
-这是当前仓库最适合开发联调的完整链路：
+当目标表已经在 YMatrix 中预先创建完成时，可以在 `spark-shell` 中先创建临时 sink view，再通过 `INSERT INTO TABLE ... SELECT ...` 执行迁移。
 
-1. 用仓库脚本生成 Iceberg 测试宽表
-2. 再用仓库脚本批量迁移到 YMatrix
+#### 6.6.2 目标表准备
 
-#### 6.6.2 第一步：造数
+先在 YMatrix 中创建目标表：
 
-在 `spark-shell` 中执行：
-
-```scala
-// 加载仓库内置的 Iceberg 宽表造数脚本。
-:load examples/iceberg-wide-table-bulk-load.scala
+```sql
+create table public.orders_demo_sql_sink (
+  order_id bigint,
+  user_id text,
+  amount decimal(18,2),
+  created_at timestamp
+)
+distributed by (order_id);
 ```
 
-脚本默认会：
-
-- 创建 `local.test_db`
-- 创建 `iot_wide_0001` 等宽表
-- 向每张表分批写入测试数据
-- 基于 `ingest_id` 支持续跑
-
-建议第一次先使用脚本默认小规模参数，不要直接放大到极限规模。
-
-#### 6.6.3 第二步：批量迁移
+#### 6.6.3 完整代码
 
 ```scala
-// 加载仓库内置的 Iceberg 到 YMatrix 批量迁移脚本。
-:load examples/iceberg-to-ymatrix-bulk-load.scala
+// 导入列函数，便于明确字段清单。
+import org.apache.spark.sql.functions.col
+
+// 读取 Iceberg catalog 名称；未指定时默认 local。
+val catalog = sys.env.getOrElse("ICEBERG_CATALOG", "local")
+// 组织 Iceberg 源表全名。
+val sourceTable = s"${catalog}.demo_db.orders_demo"
+// 读取 YMatrix JDBC 地址。
+val ymatrixUrl = sys.env("YMATRIX_URL")
+// 读取 YMatrix 用户名。
+val ymatrixUser = sys.env("YMATRIX_USER")
+// 读取 YMatrix 密码。
+val ymatrixPassword = sys.env("YMATRIX_PASSWORD")
+// 读取目标 schema；若未设置则默认 public。
+val ymatrixSchema = sys.env.getOrElse("YMATRIX_SCHEMA", "public")
+// 指定目标表名；该表需要已在 YMatrix 中存在。
+val targetTable = "orders_demo_sql_sink"
+
+// 若临时 view 已存在，则先删除，避免重复创建时报错。
+spark.sql("DROP VIEW IF EXISTS iceberg_orders_src")
+// 若 sink view 已存在，则先删除，避免重复创建时报错。
+spark.sql("DROP VIEW IF EXISTS ymatrix_orders_sink")
+
+// 读取 Iceberg 源表，并显式列出写入所需字段。
+spark.table(sourceTable)
+  // 通过 select 固定列顺序，并显式处理字段类型。
+  .select(
+    col("order_id"),
+    col("user_id"),
+    col("amount").cast("decimal(18,2)").as("amount"),
+    col("created_at")
+  )
+  // 注册为临时 view，供后续 INSERT SQL 使用。
+  .createOrReplaceTempView("iceberg_orders_src")
+
+// 创建指向 YMatrix 目标表的临时 sink view。
+spark.sql(
+  s"""
+     |CREATE TEMPORARY VIEW ymatrix_orders_sink
+     |USING com.itsumma.gpconnector.GreenplumDataSource
+     |OPTIONS (
+     |  url '${ymatrixUrl}',
+     |  user '${ymatrixUser}',
+     |  password '${ymatrixPassword}',
+     |  dbschema '${ymatrixSchema}',
+     |  dbtable '${targetTable}',
+     |  network.timeout '120s',
+     |  server.timeout '120s',
+     |  dbmessages 'WARN'
+     |)
+     |""".stripMargin
+)
+
+// 通过 INSERT INTO TABLE 将 Iceberg 数据写入 YMatrix。
+spark.sql(
+  """
+    |INSERT INTO TABLE ymatrix_orders_sink
+    |SELECT /*+ REPARTITION(4, order_id) */
+    |  order_id,
+    |  user_id,
+    |  amount,
+    |  created_at
+    |FROM iceberg_orders_src
+    |""".stripMargin
+)
+
+// 读取目标表并按主键排序，校验迁移结果。
+spark.read
+  // 指定 connector 数据源。
+  .format("its-ymatrix")
+  // 指定 JDBC 地址。
+  .option("url", ymatrixUrl)
+  // 指定用户名。
+  .option("user", ymatrixUser)
+  // 指定密码。
+  .option("password", ymatrixPassword)
+  // 指定查询 SQL。
+  .option("dbtable", s"select * from ${ymatrixSchema}.${targetTable} order by order_id")
+  // 执行读取。
+  .load()
+  // 打印结果，不截断字段。
+  .show(false)
 ```
 
-这个脚本会：
-
-- 逐张表读取 Iceberg 宽表
-- 检查 YMatrix 目标表是否存在
-- 自动根据 `max(ingest_id)` 判断是否需要继续迁移
-- 每次按 `rowsPerBatch` 分段写入
-
-#### 6.6.4 推荐修改参数
-
-在正式执行前，优先调整以下参数：
+#### 6.6.4 校验
 
 ```scala
-// 指定 Iceberg 源 namespace。
-val icebergNamespace = "local.test_db"
-// 指定 YMatrix JDBC 地址。
-val ymatrixUrl = "jdbc:postgresql://ymatrix-master-host:5432/your_database"
-// 指定 YMatrix 用户名。
-val ymatrixUser = "database_user"
-// 指定 YMatrix 密码。
-val ymatrixPassword = "yourpassword"
-// 指定目标 schema。
-val ymatrixSchema = "public"
-// 从第 1 张表开始迁移。
-val tableStartIndex = 1
-// 本次只迁移 3 张表，适合联调。
-val tableCount = 3
-// 每批迁移 20 万行。
-val rowsPerBatch = 200000L
-// 写入前使用 8 个分区。
-val writePartitions = 8
-// 指定目标分布键。
-val ymatrixDistributedBy = "ingest_id"
+// 查询目标表总行数。
+spark.read
+  .format("its-ymatrix")
+  .option("url", sys.env("YMATRIX_URL"))
+  .option("user", sys.env("YMATRIX_USER"))
+  .option("password", sys.env("YMATRIX_PASSWORD"))
+  .option(
+    "dbtable",
+    s"select count(*)::bigint as cnt from ${sys.env.getOrElse("YMATRIX_SCHEMA", "public")}.orders_demo_sql_sink"
+  )
+  .load()
+  .show(false)
 ```
 
-#### 6.6.5 推荐校验
+#### 6.6.5 注意事项
 
-```scala
-// 查看 namespace 下有哪些 Iceberg 表。
-spark.sql("show tables in local.test_db").show(50, false)
-// 校验第一张宽表总行数。
-spark.sql("select count(*) from local.test_db.iot_wide_0001").show(false)
-// 校验第一张宽表的 ingest_id 范围。
-spark.sql("select min(ingest_id), max(ingest_id) from local.test_db.iot_wide_0001").show(false)
-```
+- `CREATE TEMPORARY VIEW` 对应的是临时 sink 定义，不会在 Iceberg catalog 中创建持久表
+- 目标表需要预先存在，因为 provider 会从目标端推断 schema
+- `INSERT INTO TABLE` 中的 `REPARTITION(4, order_id)` 控制写入前的 Spark 分区数
 
 ### 6.7 示例七：单表大数据量分批迁移
 
 #### 6.7.1 场景说明
 
-这是本文最重要的业务模板之一。它展示了如何把一个大表按业务水位字段分批迁移，并支持断点续跑。
+这个模板展示了如何按业务水位字段分批迁移单表，并支持断点续跑。
 
 #### 6.7.2 设计思想
 
-设计本质不是“循环写入”，而是“用目标侧当前水位去决定下一批该从哪里开始”。
+设计逻辑是用目标侧当前水位决定下一批起点。
 
 逻辑如下：
 
@@ -1046,109 +1110,20 @@ while (nextStartId <= maxSourceId) {
 }
 ```
 
-#### 6.7.4 推荐使用场景
+#### 6.7.4 使用场景
 
 - 单表亿级数据迁移
 - 需要支持重跑
 - 需要明确批次边界
 - 需要记录每批写入范围
 
-### 6.8 示例八：多表批量迁移
+### 6.8 示例八：在 Spark 内直接校验 YMatrix
 
 #### 6.8.1 场景说明
 
-多表批量迁移不应一开始就写成复杂框架。当前仓库已经提供了足够清晰的脚本模板，可直接复用。
+开发联调时可以直接在 Spark 内回查 YMatrix 结果。
 
-#### 6.8.2 执行方式
-
-```scala
-// 加载仓库内置的多表批量迁移脚本。
-:load examples/iceberg-to-ymatrix-bulk-load.scala
-```
-
-#### 6.8.3 标准参数解释
-
-| 参数 | 含义 |
-|---|---|
-| `tableStartIndex` | 从第几张表开始 |
-| `tableCount` | 本次迁移多少张表 |
-| `rowsPerBatch` | 每批迁移多少行区间 |
-| `writePartitions` | 写入前的 Spark 分区数 |
-| `ymatrixDistributedBy` | 目标分布键 |
-
-#### 6.8.4 常见执行方式
-
-只迁移前 3 张表：
-
-```scala
-// 从第 1 张表开始迁移。
-val tableStartIndex = 1
-// 本次总共迁移 3 张表。
-val tableCount = 3
-```
-
-从第 21 张表开始迁移 5 张表：
-
-```scala
-// 从第 21 张表开始迁移。
-val tableStartIndex = 21
-// 本次总共迁移 5 张表。
-val tableCount = 5
-```
-
-### 6.9 示例九：增量同步演示
-
-#### 6.9.1 场景说明
-
-当团队需要先理解“持续同步”的基本思路时，最好的方式不是直接讨论复杂 CDC，而是先看一个水位驱动的简单循环模型。
-
-当前仓库已经提供了对应示例：
-
-```scala
-// 加载仓库内置的增量同步演示脚本。
-:load examples/iceberg-to-ymatrix-continuous-sync.scala
-```
-
-#### 6.9.2 运行前准备
-
-先在 YMatrix 中创建目标表：
-
-```sql
--- 创建增量同步演示用的目标表。
-create table public.iceberg_sync_demo (
-  -- 订单主键，用于作为同步水位字段。
-  order_id bigint,
-  -- 用户标识字段。
-  user_id text,
-  -- 金额字段，保留两位小数。
-  amount decimal(18,2),
-  -- 订单创建时间。
-  created_at timestamp,
-  -- 批次号，用于标识每轮演示写入。
-  batch_id bigint
--- 指定目标表分布键。
-)
--- 以 order_id 作为分布键创建表。
-distributed by (order_id);
-```
-
-#### 6.9.3 示例本质
-
-这个示例的本质是：
-
-1. 向 Iceberg 持续追加新数据
-2. 每轮读取目标侧当前最大 `order_id`
-3. 只同步尚未写入目标侧的新行
-
-它适合理解增量思路，但不应直接等同于生产级 CDC。
-
-### 6.10 示例十：在 Spark 内直接校验 YMatrix
-
-#### 6.10.1 场景说明
-
-开发联调过程中，最常见低效动作是频繁在 `spark-shell`、`psql`、日志之间来回切换。更推荐的方式是直接在 Spark 内做结果回查。
-
-#### 6.10.2 行数校验
+#### 6.8.2 行数校验
 
 ```scala
 // 创建一个读取入口，并准备通过 connector 查询 YMatrix 行数。
@@ -1172,7 +1147,7 @@ spark.read
   .show(false)
 ```
 
-#### 6.10.3 水位校验
+#### 6.8.3 水位校验
 
 ```scala
 // 创建一个读取入口，并准备查询目标表的最小和最大 order_id。
@@ -1196,7 +1171,7 @@ spark.read
   .show(false)
 ```
 
-#### 6.10.4 抽样校验
+#### 6.8.4 抽样校验
 
 ```scala
 // 创建一个读取入口，并准备抽样查看目标表的前 10 行数据。
@@ -1235,9 +1210,9 @@ spark.read
 
 ### 7.2 `repartition` 如何理解
 
-`repartition` 的本质不是“数字越大越快”，而是控制 Spark 在写入前如何组织并发与数据切分。
+`repartition` 用于控制 Spark 在写入前如何组织并发与数据切分。
 
-推荐做法：
+使用方式：
 
 - 小规模验证时先从 `4` 或 `8` 开始
 - 与 YMatrix primary segment 数量协调
@@ -1258,9 +1233,9 @@ spark.read
 - 单批持续时间长
 - 网络与资源抖动放大
 
-推荐策略：
+批大小选择参考：
 
-| 阶段 | 建议 |
+| 阶段 | 参考范围 |
 |---|---|
 | 首次联调 | `10000 ~ 100000` |
 | 中等规模验证 | `100000 ~ 500000` |
@@ -1268,7 +1243,7 @@ spark.read
 
 ### 7.4 何时用 `append`
 
-推荐使用 `append` 的场景：
+`append` 适用场景：
 
 - 分批迁移
 - 增量同步
@@ -1280,7 +1255,7 @@ spark.read
 
 ### 7.5 何时用 `overwrite`
 
-推荐使用 `overwrite` 的场景：
+`overwrite` 适用场景：
 
 - 测试表反复重灌
 - 首次开发联调
@@ -1292,14 +1267,14 @@ spark.read
 
 ### 7.6 目标表分布键如何选
 
-优先级建议：
+分布键选择顺序：
 
 1. 高基数
 2. 稳定
 3. 常用于查询或 join
 4. 尽量避免热点
 
-对于本文中的宽表示例，`ingest_id` 适合作为压测和迁移验证场景下的默认分布键。
+对于本文中的宽表示例，`ingest_id` 可作为压测和迁移验证场景下的默认分布键。
 
 ### 7.7 常见性能误区
 
@@ -1322,14 +1297,14 @@ spark.read
 | 自动建表 | 开发联调快 | DDL 可控性较弱 |
 | 预建表 | 结构更可控 | 前置工作更多 |
 
-开发建议：
+开发阶段与生产阶段可采用不同表创建方式：
 
-- 联调阶段优先自动建表
-- 正式环境建议关键业务表预建表
+- 联调阶段可使用自动建表
+- 正式环境通常预建关键业务表
 
 ### 8.2 目标表结构映射的控制点
 
-开发中最重要的控制点有三类：
+目标表结构映射的主要控制点有三类：
 
 1. `select(...)` 明确列清单
 2. `cast(...)` 明确类型
@@ -1337,7 +1312,7 @@ spark.read
 
 ### 8.3 从脚本演进到正式作业
 
-推荐的代码分层方式如下：
+代码分层可以按以下方式组织：
 
 ```text
 loadIcebergTable()
@@ -1349,7 +1324,7 @@ writeToYMatrix()
 validate()
 ```
 
-推荐的代码模板：
+代码模板：
 
 ```scala
 import org.apache.spark.sql.DataFrame
@@ -1403,79 +1378,3 @@ val dst = transform(src)
 writeToYMatrix(dst, "iot_wide_for_app")
 validate("iot_wide_for_app")
 ```
-
-## 9. 安全、权限与常见误区
-
-### 9.1 不要在正式代码中硬编码密码
-
-仓库中的示例脚本为了演示方便，存在直接写密码的示例。开发手册中的标准建议是：
-
-- 使用环境变量
-- 使用 Spark 配置
-- 使用密钥管理系统
-
-### 9.2 权限建议
-
-开发环境与正式环境建议区分：
-
-| 环境 | 建议 |
-|---|---|
-| 开发联调 | 可适当放宽，优先打通链路 |
-| 测试环境 | 开始收敛 schema 与建表权限 |
-| 正式环境 | 按最小权限原则控制 |
-
-### 9.3 常见误区汇总
-
-| 误区 | 正确认识 |
-|---|---|
-| connector 会自动保证幂等 | 幂等取决于你的业务设计 |
-| 可以直接依赖 `select *` | 宽表迁移建议显式列清单 |
-| `append` 就等于增量同步 | 增量同步还需要水位控制 |
-| 自动建表即可替代建模 | 自动建表适合联调，不等于最终治理 |
-| 只有 Spark 能连库就够了 | 还需要 YMatrix segment 到 Spark Worker 可达 |
-
-## 10. 附录
-
-### 10.1 建议的开发验证顺序
-
-推荐按以下顺序开展开发：
-
-步骤一：跑“最小可复现链路”
-
-步骤二：在 Spark 内反查 YMatrix，确认结果无误
-
-步骤三：迁移已有 Iceberg 表，确认字段和类型映射
-
-步骤四：做范围迁移或小批量分批迁移
-
-步骤五：跑仓库现成的多表脚本
-
-步骤六：把脚本提炼成正式作业代码
-
-### 10.2 最低校验清单
-
-每次迁移完成后，至少检查以下内容：
-
-1. 源表行数
-2. 目标表行数
-3. 水位字段最小值和最大值
-4. 抽样数据内容
-5. 目标表 schema 是否符合预期
-
-### 10.3 相关仓库文件
-
-建议结合以下文件一起阅读：
-
-- `README.md`
-- `docs/iceberg-ymatrix-test-plan.md`
-- `examples/iceberg-wide-table-bulk-load.scala`
-- `examples/iceberg-to-ymatrix-bulk-load.scala`
-- `examples/iceberg-to-ymatrix-continuous-sync.scala`
-
-### 10.4 一句话结论
-
-对于开发人员而言，Iceberg 到 YMatrix 的标准做法并不复杂，其本质就是：
-
-先在 Spark 中把 Iceberg 数据组织成正确的 DataFrame，再通过 `format("its-ymatrix")` 以明确的写入模式、分布键和水位策略写入 YMatrix。
-
-真正决定项目质量的，不是 connector 调用这一行代码本身，而是你如何设计字段映射、分批策略、幂等控制、校验方法和上线方式。
