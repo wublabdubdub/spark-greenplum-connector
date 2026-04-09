@@ -5,16 +5,14 @@ import com.itsumma.gpconnector.rmi.GPConnectorModes
 import com.itsumma.gpconnector.rmi.GPConnectorModes.GPConnectorMode
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SaveMode
-import org.apache.spark.sql.connector.expressions.filter.Predicate
 import org.apache.spark.sql.connector.write.streaming.StreamingWrite
-import org.apache.spark.sql.connector.write.{BatchWrite, SupportsOverwriteV2, SupportsTruncate, Write, WriteBuilder}
+import org.apache.spark.sql.connector.write.{BatchWrite, SupportsTruncate, WriteBuilder}
 import org.apache.spark.sql.itsumma.gpconnector.{GPColumnMeta, GPOptionsFactory, GPTarget, GpTableTypes, SparkSchemaUtil}
 
 import java.util.concurrent.atomic.AtomicBoolean
 import org.apache.spark.sql.types.StructType
 
 import java.sql.Connection
-import org.apache.spark.sql.execution.streaming.AsyncProgressTrackingMicroBatchExecution
 
 class GreenplumWriteBuilder(
                              gpClient: GPClient,
@@ -128,14 +126,14 @@ class GreenplumWriteBuilder(
       gpTableMeta, targetTableCanonicalName, gpClient, connectorMode, ignoreInsert)
   }
 
-  private def write: Write = new Write {
-    override def toBatch: BatchWrite = newBatch()
-    override def toStreaming: StreamingWrite = newBatch(GPConnectorModes.MicroBatch)
+  override def buildForBatch(): BatchWrite = {
+    buildDbObjects()
+    newBatch()
   }
 
-  override def build(): Write = {
+  override def buildForStreaming(): StreamingWrite = {
     buildDbObjects()
-    write
+    newBatch(GPConnectorModes.MicroBatch)
   }
 
   override def truncate(): WriteBuilder = {

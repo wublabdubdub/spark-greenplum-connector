@@ -21,6 +21,7 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-dbcp2</artifactId>
             <version>2.9.0</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 
@@ -78,7 +79,7 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
-                            <finalName>${project.artifactId}_${scala.binary.version}-${project.binary.version}</finalName>
+                            <finalName>${project.artifactId}_${scala.binary.version}-${project.binary.version}_${maven.build.timestamp}</finalName>
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
@@ -113,7 +114,7 @@
                         <phase>install</phase>
                         <configuration>
                             <target>
-                                <copy file="target/${project.artifactId}_${scala.binary.version}-${project.binary.version}.jar" tofile="/home/hadoop/spark/jars/${project.artifactId}_${scala.binary.version}-${project.binary.version}.jar"/>
+                                <copy file="target/${project.artifactId}_${scala.binary.version}-${project.binary.version}_${maven.build.timestamp}.jar" tofile="/home/hadoop/spark/jars/${project.artifactId}_${scala.binary.version}-${project.binary.version}_${maven.build.timestamp}.jar"/>
                             </target>
                         </configuration>
                         <goals>

@@ -334,7 +334,16 @@ def buildBatch(fullTableName: String, startId: Long, endIdInclusive: Long): Data
   spark.table(fullTableName)
     .where(col("ingest_id").between(lit(startId), lit(endIdInclusive)))
     .select(wideColumns.map(col): _*)
-    .repartition(writePartitions, col("ingest_id"))
+}
+
+// 先对过滤后的源批次做轻量判空，避免把空判断放到 repartition 之后。
+def hasAnyRows(batchDf: DataFrame): Boolean = {
+  batchDf.limit(1).take(1).nonEmpty
+}
+
+// 只有确认非空后，才按目标分布键重分区用于写入。
+def prepareWriteBatch(batchDf: DataFrame): DataFrame = {
+  batchDf.repartition(writePartitions, col(ymatrixDistributedBy))
 }
 
 // 把一批 DataFrame 数据追加写入 YMatrix。
@@ -397,20 +406,36 @@ def syncTable(tableNo: Int, passNo: Int): Unit = {
     val batchRowCount = nextEndId - nextStartId + 1L
     val batchDf = buildBatch(sourceTable, nextStartId, nextEndId)
 
-    writeBatchToYMatrix(batchDf, targetTable)
+    if (hasAnyRows(batchDf)) {
+      val writeDf = prepareWriteBatch(batchDf)
+      writeBatchToYMatrix(writeDf, targetTable)
 
-    upsertWatermark(
-      targetTable,
-      nextEndId,
-      sourceMaxIngestId,
-      batchRowCount,
-      s"pass=${passNo}, ingest_id=[${nextStartId}, ${nextEndId}]"
-    )
+      upsertWatermark(
+        targetTable,
+        nextEndId,
+        sourceMaxIngestId,
+        batchRowCount,
+        s"pass=${passNo}, ingest_id=[${nextStartId}, ${nextEndId}]"
+      )
 
-    println(
-      s"[batch] ${sourceTable} -> ${ymatrixSchema}.${targetTable}, " +
-        s"rows=${batchRowCount}, ingest_id=[${nextStartId}, ${nextEndId}]"
-    )
+      println(
+        s"[batch] ${sourceTable} -> ${ymatrixSchema}.${targetTable}, " +
+          s"rows=${batchRowCount}, ingest_id=[${nextStartId}, ${nextEndId}]"
+      )
+    } else {
+      upsertWatermark(
+        targetTable,
+        nextEndId,
+        sourceMaxIngestId,
+        0L,
+        s"pass=${passNo}, ingest_id=[${nextStartId}, ${nextEndId}], status=no_rows_in_range"
+      )
+
+      println(
+        s"[batch-skip] ${sourceTable} -> ${ymatrixSchema}.${targetTable}, " +
+          s"ingest_id=[${nextStartId}, ${nextEndId}], reason=no_rows_in_range"
+      )
+    }
 
     lastSyncedIngestId = nextEndId
   }

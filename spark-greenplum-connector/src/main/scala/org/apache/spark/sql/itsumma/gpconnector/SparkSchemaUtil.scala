@@ -14,7 +14,7 @@ import org.apache.spark.sql.execution.datasources.jdbc.JdbcUtils
 import SparkSchemaUtil.rightPadWithChar
 import org.apache.commons.lang3.StringUtils
 import org.apache.spark.SparkContext
-import org.apache.spark.sql.connector.catalog.{CatalogV2Util, Column}
+import org.apache.spark.sql.connector.catalog.CatalogV2Util
 import org.apache.spark.sql.itsumma.gpconnector.GpTableTypes.GpTableType
 import org.apache.spark.sql.jdbc.{JdbcDialect, JdbcDialects}
 import org.apache.spark.sql.sources._
@@ -484,27 +484,17 @@ object SparkSchemaUtil {
         }
       case _ => None
     }
-    val waitDeadlineMs = System.currentTimeMillis() + 30000
-    var guess: Int = -1
-    while ((guess <= 0) && !Thread.currentThread().isInterrupted) {
-      guess = localThreads.getOrElse {
-        val executorCount = sparkContext.getExecutorMemoryStatus.keys.size
-        var inferredExecutors = executorCount - 1
-        if (sparkContext.deployMode == "cluster")
-          inferredExecutors -= 1
-        inferredExecutors
-      }
-      if ((guess <= 0) && (System.currentTimeMillis() >= waitDeadlineMs)) {
-        // Fall back to one task instead of spinning forever while executors are still settling.
-        guess = 1
-      }
-      if (guess <= 0)
-        Thread.sleep(50)
+    val executorGuess = localThreads.getOrElse {
+      val executorCount = sparkContext.getExecutorMemoryStatus.keys.size
+      var inferredExecutors = executorCount - 1
+      if (sparkContext.deployMode == "cluster")
+        inferredExecutors -= 1
+      inferredExecutors
     }
-    guess
+    val fallbackGuess = math.max(sparkContext.defaultParallelism, 1)
+    math.max(math.max(executorGuess, fallbackGuess), 1)
   }
 
-  def schema2Columns(schema: StructType): Array[Column] = CatalogV2Util.structTypeToV2Columns(schema)
 }
 
 case class SparkSchemaUtil(dbTimeZoneName: String = java.time.ZoneId.systemDefault.toString) {

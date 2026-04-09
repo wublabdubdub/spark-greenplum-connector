@@ -252,8 +252,16 @@ def buildBatch(fullTableName: String, startId: Long, endIdInclusive: Long): Data
     .where(col("ingest_id").between(lit(startId), lit(endIdInclusive)))
     // 按 wideColumns 指定列顺序输出。
     .select(wideColumns.map(col): _*)
-    // 根据写入分区数重新分区。
-    .repartition(writePartitions)
+}
+
+// 先对未 repartition 的批次做轻量判空，避免为了空判断触发整轮大 shuffle。
+def hasAnyRows(batchDf: DataFrame): Boolean = {
+  batchDf.limit(1).take(1).nonEmpty
+}
+
+// 只有确认批次非空后，才按目标分布键组织写入分区。
+def prepareWriteBatch(batchDf: DataFrame): DataFrame = {
+  batchDf.repartition(writePartitions, col(ymatrixDistributedBy))
 }
 
 // 把一批 DataFrame 数据追加写入 YMatrix。
@@ -327,14 +335,22 @@ def copyTable(tableNo: Int): Unit = {
     // 读取这一批的源数据。
     val batchDf = buildBatch(sourceTable, nextStartId, nextEndId)
 
-    // 把当前批次写入 YMatrix。
-    writeBatchToYMatrix(batchDf, targetTable)
+    if (hasAnyRows(batchDf)) {
+      // 只有非空批次才执行 repartition 和写入，减少写前无效 shuffle。
+      val writeDf = prepareWriteBatch(batchDf)
+      writeBatchToYMatrix(writeDf, targetTable)
 
-    // 打印批次完成日志。
-    println(
-      s"[batch] ${sourceTable} -> ${ymatrixSchema}.${targetTable}, " +
-        s"rows=${nextEndId - nextStartId + 1L}, ingest_id=[${nextStartId}, ${nextEndId}]"
-    )
+      // 打印批次完成日志。
+      println(
+        s"[batch] ${sourceTable} -> ${ymatrixSchema}.${targetTable}, " +
+          s"ingest_id=[${nextStartId}, ${nextEndId}]"
+      )
+    } else {
+      println(
+        s"[batch-skip] ${sourceTable} -> ${ymatrixSchema}.${targetTable}, " +
+          s"ingest_id=[${nextStartId}, ${nextEndId}], reason=no_rows_in_range"
+      )
+    }
 
     // 推进下一批次起点。
     nextStartId = nextEndId + 1L

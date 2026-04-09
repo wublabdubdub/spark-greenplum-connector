@@ -19,7 +19,8 @@ final case class GreenplumConnectionExpired(private val message: String = "",
 case class GreenplumWriterCommitMessage(writeUUID : String, instanceId: String, gpfdistUrl: String,
                                         partitionId : Int, taskId : Long, epochId : Long,
                                         nRowsWritten : Long, rmiPutMs: Long, rmiGetMs: Long,
-                                        nBytesWritten : Long, webTransferMs: Long
+                                        nBytesWritten : Long, webTransferMs: Long,
+                                        row2TextMs: Long, commitWaitMs: Long, gpfStopMs: Long
                                        )
   extends WriterCommitMessage
 {}
@@ -88,6 +89,9 @@ class GreenplumDataWriter(writeUUID: String, schema: StructType, optionsFactory:
     var webTransferMs: Long = 0
     var nBytes: Long = 0
     var gpfReport: String = ""
+    var row2TextMs: Long = 0
+    var commitWaitMs: Long = 0
+    var gpfStopMs: Long = 0
     val valid: Boolean = this.synchronized{
       rmiSlave != null
     }
@@ -104,6 +108,10 @@ class GreenplumDataWriter(writeUUID: String, schema: StructType, optionsFactory:
         progressTracker.trackProgress("gpfStopMs") {
           rmiGetMs = rmiSlave.stop
         }
+        val progress = progressTracker.results
+        row2TextMs = progress.getOrElse("row2text", 0L)
+        commitWaitMs = progress.getOrElse("commit", 0L)
+        gpfStopMs = progress.getOrElse("gpfStopMs", 0L)
         rmiSlave = null
         }
     }
@@ -113,10 +121,17 @@ class GreenplumDataWriter(writeUUID: String, schema: StructType, optionsFactory:
         s"${progressTracker.reportTimeTaken()}\n" +
         s"${gpfReport}")
     }
+    if (optionsFactory.detailedTiming) {
+      logInfo(s"[ymatrix-executor-detail] epochId=${epochId}, partitionId=${partitionId}, taskId=${taskId}, " +
+        s"rows=${rowCount.get()}, row2TextMs=${row2TextMs}, rmiPutMs=${rmiPutMs.get()}, " +
+        s"commitWaitMs=${commitWaitMs}, webTransferMs=${webTransferMs}, gpfStopMs=${gpfStopMs}, " +
+        s"rmiGetMs=${rmiGetMs}, bytes=${nBytes}, gpfdistUrl=${gpfdistUrl}")
+    }
     val ret = GreenplumWriterCommitMessage(writeUUID=writeUUID, instanceId=instanceId, gpfdistUrl=gpfdistUrl,
       partitionId=partitionId, taskId=taskId, epochId=epochId,
       nRowsWritten=rowCount.get(), rmiPutMs=rmiPutMs.get(), rmiGetMs=rmiGetMs,
-      nBytesWritten=nBytes, webTransferMs=webTransferMs
+      nBytesWritten=nBytes, webTransferMs=webTransferMs,
+      row2TextMs=row2TextMs, commitWaitMs=commitWaitMs, gpfStopMs=gpfStopMs
     )
     rowCount.set(0)
     rmiPutMs.set(0)

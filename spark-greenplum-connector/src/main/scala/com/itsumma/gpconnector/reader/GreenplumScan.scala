@@ -4,7 +4,7 @@ import com.itsumma.gpconnector.rmi.GPConnectorModes.GPConnectorMode
 import com.itsumma.gpconnector.{GPClient, GPOffset, GreenplumRowSet}
 import com.itsumma.gpconnector.rmi.{GPConnectorModes, NetUtils, RMIMaster}
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.connector.read.partitioning.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.connector.read.partitioning.Partitioning
 import org.apache.spark.sql.connector.read.streaming.{MicroBatchStream, Offset}
 import org.apache.spark.sql.connector.read.{Batch, InputPartition, Scan, Statistics, SupportsReportPartitioning, SupportsReportStatistics}
 import org.apache.spark.sql.itsumma.gpconnector.{GPOptionsFactory, GPTarget, GpTableTypes, SparkSchemaUtil}
@@ -409,7 +409,9 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
     numPartsPlan
   }
 
-  override def outputPartitioning(): Partitioning = new UnknownPartitioning(plainNumPartitions())
+  override def outputPartitioning(): Partitioning = new Partitioning {
+    override def numPartitions(): Int = plainNumPartitions()
+  }
 
   def setOffsetRange(start: Option[Offset], end: Option[Offset]): Array[InputPartition] = {
     var newOffset: Boolean = false

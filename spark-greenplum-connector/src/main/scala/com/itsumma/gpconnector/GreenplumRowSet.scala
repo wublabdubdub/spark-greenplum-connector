@@ -4,7 +4,7 @@ import com.itsumma.gpconnector.reader.GreenplumScanBuilder
 import com.itsumma.gpconnector.writer.GreenplumWriteBuilder
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.connector.catalog.{Column, SupportsRead, SupportsWrite, Table, TableCapability}
+import org.apache.spark.sql.connector.catalog.{SupportsRead, SupportsWrite, Table, TableCapability}
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.connector.read.ScanBuilder
 import org.apache.spark.sql.connector.write.{LogicalWriteInfo, WriteBuilder}
@@ -78,7 +78,6 @@ For asynchronous progress tracking name must be one of:
     if (actualSchema == null) actualSchema = initSchema()
     actualSchema.copy()
   }
-  override def columns(): Array[Column] = SparkSchemaUtil.schema2Columns(actualSchema)
 
   override def partitioning(): Array[Transform] = passedInPartitioning
 

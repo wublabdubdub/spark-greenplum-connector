@@ -4,7 +4,6 @@ import com.itsumma.gpconnector.rmi.GPConnectorModes.GPConnectorMode
 import com.itsumma.gpconnector.rmi.RMIMaster.{clientSocketFactory, createRegistry, localHotName, localIpAddress, serverSocketFactory}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.itsumma.gpconnector.GPOptionsFactory
-import org.apache.spark.sql.itsumma.gpconnector.SparkSchemaUtil.guessMaxParallelTasks
 
 import java.net.{InetAddress, ServerSocket, Socket}
 //import java.rmi.{Naming, RemoteException}
@@ -134,7 +133,6 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
     with Unreferenced
     with Logging
 {
-  private val nParallelTasks = guessMaxParallelTasks()
   private val client2Segment: MutableMap[ITSIpcClient, String] = MutableMap[ITSIpcClient, String]()
   private val address2Seg = MutableMap[String, Set[String]]()
   private val seg2ServiceProvider = MutableMap[String, ITSIpcClient]()
@@ -154,7 +152,7 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
   private val partUrlByInstId: MutableHashMap[String, String] = MutableHashMap()
 
   logInfo(s"Starting driver instance ${queryId} on ${localHotName}/${localIpAddress}," +
-    s"parallel tasks=$nParallelTasks")
+    s"mode=$mode, nGpSegments=$nGpSegments, writeBatchSettleMs=${optionsFactory.writeBatchSettleMs}")
   // private val registry: Registry = LocateRegistry.createRegistry(RMIRegPort)
   // Naming.rebind(s"//localhost:${RMIRegPort}/com/itsumma/gpconnector/rmi/RMIMaster", this)
   private var (registry: Registry, registryPort: Int) = createRegistry
@@ -209,8 +207,8 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
     if (currentBatchSize == 0)
       return -2
     if (!isReadTransaction) {
-      if ((currentBatchSize < nParallelTasks)
-        && ((System.currentTimeMillis() - transactionStartMs) < partInitMs))
+      // Freeze a write batch only after task arrivals have been quiet briefly.
+      if ((System.currentTimeMillis() - transactionStartMs) < optionsFactory.writeBatchSettleMs)
         return -2
     } else {
       val minWait = if (partInitMs > 0) partInitMs else 1000
@@ -299,24 +297,7 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
   def commitBatch(msMax: Long = 60000): Int = {
     val start = System.currentTimeMillis()
     val rnd = new scala.util.Random
-    this.synchronized {
-//      if (!isReadTransaction || jobAbort.get()) {
-//      }
-      var cmd = "sqlTransferComplete"
-      if (jobAbort.get()) {
-        cmd = "sqlTransferAbort"
-      }
-      pcbByInstanceId.foreach { instance => {
-          logDebug(s"Sending ${cmd} to the slave ${instance._1}")
-          val pcb:  PartitionControlBlock = instance._2.handler.coordinatorAsks(instance._2, cmd)
-          if (pcb != null) {
-            logTrace(s"commitBatch: sent ${cmd} to partition reader instances ${instance._1}")
-          } else {
-            logTrace(s"commitBatch: can't send ${cmd} to partition reader instances ${instance._1}")
-          }
-        }
-      }
-    }
+    broadcastCoordinatorCommand(if (jobAbort.get()) "sqlTransferAbort" else "sqlTransferComplete")
     var newBatchNo: Int = commitBatchTry()
     lockPass.set(0)
     while ((newBatchNo < -1) && !Thread.currentThread().isInterrupted && ((System.currentTimeMillis() - start) < msMax)) {
@@ -329,6 +310,69 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
       throw new Exception(s"Unable to commit batch ${batchNo.get()}")
     //logDebug(s"commitBatch success, newBatchNo=${newBatchNo}")
     newBatchNo
+  }
+
+  private def broadcastCoordinatorCommand(cmd: String): Unit = {
+    val instances = this.synchronized {
+      pcbByInstanceId.toList
+    }
+    instances.foreach { instance =>
+      try {
+        logDebug(s"Sending ${cmd} to the slave ${instance._1}")
+        val pcb: PartitionControlBlock = instance._2.handler.coordinatorAsks(instance._2, cmd)
+        if (pcb != null) {
+          logTrace(s"commitBatch: sent ${cmd} to partition reader instances ${instance._1}")
+        } else {
+          logTrace(s"commitBatch: can't send ${cmd} to partition reader instances ${instance._1}")
+        }
+      } catch {
+        case e: Exception =>
+          logWarning(s"Failed to send ${cmd} to ${instance._1}: ${e.getClass.getCanonicalName}: ${e.getMessage}")
+      }
+    }
+  }
+
+  def failJob(message: String, notifySlaves: Boolean = true): Unit = {
+    this.synchronized {
+      if (message != null && message.nonEmpty) {
+        abortMsg = message
+      } else if (abortMsg == null || abortMsg.isEmpty) {
+        abortMsg = s"Job ${queryId} aborted"
+      }
+      if (nFails.get() == 0) {
+        nFails.incrementAndGet()
+      }
+      jobAbort.set(true)
+    }
+    if (notifySlaves) {
+      broadcastCoordinatorCommand("sqlTransferAbort")
+    }
+  }
+
+  def retryBatch(message: String): Int = {
+    if (message != null && message.nonEmpty) {
+      this.synchronized {
+        abortMsg = message
+      }
+    }
+    broadcastCoordinatorCommand("sqlTransferAbort")
+    this.synchronized {
+      pcbByInstanceId.clear()
+      partUrlByInstId.clear()
+      address2Seg.clear()
+      seg2ServiceProvider.clear()
+      client2Segment.clear()
+      nSuccess.set(0)
+      localBatchPrepared = false
+      nBatchSize.set(0)
+      transactionStartMs = System.currentTimeMillis()
+      partInitMs = 0
+      val nextBatch = batchNo.incrementAndGet()
+      if (nextBatch < 0) {
+        batchNo.set(0)
+      }
+      batchNo.get()
+    }
   }
 
   def stop(): Unit = this.synchronized {
@@ -370,6 +414,24 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
 
   class GpSegmentAdhereException(s: String) extends Exception(s) {}
 
+  private def preferredUnservedSegments(hostAddress: String): Set[String] = {
+    if ((address2PrefSeg != null) && address2PrefSeg.contains(hostAddress)) {
+      address2PrefSeg(hostAddress) -- seg2ServiceProvider.keySet
+    } else {
+      Set[String]()
+    }
+  }
+
+  private def anyUnservedSegments: Set[String] = {
+    (for (id <- 0 until nGpSegments) yield id.toString).toSet -- seg2ServiceProvider.keySet
+  }
+
+  private def shouldStartService(hostAddress: String): Boolean = {
+    if (isReadTransaction || address2Seg.contains(hostAddress))
+      return false
+    preferredUnservedSegments(hostAddress).nonEmpty || anyUnservedSegments.nonEmpty
+  }
+
   override def handlerAsks(pcb: PartitionControlBlock, func: String, msMax: Long = 60000): PartitionControlBlock = {
     val start = System.currentTimeMillis()
     val rnd = new scala.util.Random
@@ -389,15 +451,16 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
     var newPcb: PartitionControlBlock = null //pcbByInstanceId.getOrElse(pcb.instanceId, null)
     var msg: String = ""
     if ((nFails.get() > 0) && (func != "abort"))
-      throw new Exception(s"Abort on ${func}")
-    var isServiceProvider: Boolean = true
-    if (!isReadTransaction) {
-      isServiceProvider = !address2Seg.contains(pcb.nodeIp) ||
-        (seg2ServiceProvider.getOrElse(pcb.gpSegmentId, null) == pcb.handler.asInstanceOf[ITSIpcClient])
-    }
+      throw new Exception(s"Abort on ${func}: ${Option(abortMsg).getOrElse("job aborted")}")
+    val isServiceProvider: Boolean =
+      if (isReadTransaction) true
+      else shouldStartService(pcb.nodeIp)
     func match {
       case "checkIn" =>
-        if (jobDone.get() || jobAbort.get()) {
+        if (jobAbort.get()) {
+          throw new Exception(s"Abort on checkIn: ${Option(abortMsg).getOrElse("job aborted")}")
+        }
+        if (jobDone.get()) {
           return pcb.copy()
         }
         try {
@@ -445,7 +508,8 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
           }
           transactionStartMs = System.currentTimeMillis()
         } catch {
-          //case ex: GpSegmentAdhereException => throw ex
+          case _: GpSegmentAdhereException =>
+            return null
           case e: Exception =>
             jobAbort.set(true)
             throw e
@@ -476,7 +540,7 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
     }
     logDebug(s"\n${(System.currentTimeMillis() % 1000).toString} handlerAsks: ${func}, ${msg}")
     if ((nFails.get() > 0) && (func != "abort"))
-      throw new Exception(s"Abort on ${func}: ${msg}")
+      throw new Exception(s"Abort on ${func}: ${Option(abortMsg).getOrElse(msg)}")
     newPcb
   }
 
@@ -506,23 +570,21 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
     val segmentServiceCounts = client2Segment groupBy (_._2) mapValues (_.size)
     var candidateSegments: Set[String] = Set[String]()
     if (isServiceHolder) {
-      if ((address2PrefSeg != null) && address2PrefSeg.contains(hostAddress)) {
-        candidateSegments = address2PrefSeg(hostAddress)
-        candidateSegments --= seg2ServiceProvider.keySet
-      } else {
-        candidateSegments = Set[String]()
+      candidateSegments = preferredUnservedSegments(hostAddress)
+      if (candidateSegments.isEmpty) {
+        candidateSegments = anyUnservedSegments
+          .filter(id => !segmentServiceCounts.contains(id))
       }
       if (candidateSegments.isEmpty) {
-        candidateSegments = (for (id <- 0 until nGpSegments) yield id.toString).toSet
-          .filter(id => !segmentServiceCounts.contains(id))
+        candidateSegments = anyUnservedSegments
       }
       candidateSegments --= seg2ServiceProvider.keySet
     } else {
-      // Make satellite executors (write only) to be always situated on the same host as its master
-      candidateSegments = segSet
+      // Prefer a local provider, but allow new hosts to attach to an existing gpfdist provider.
+      candidateSegments = if (segSet.nonEmpty) segSet else seg2ServiceProvider.keySet.toSet
     }
     if (candidateSegments.isEmpty)
-      throw new Exception(s"Unable to assign GP segment to the ITSIpcClient instance ${pcb}")
+      throw new GpSegmentAdhereException(s"Unable to assign GP segment to the ITSIpcClient instance ${pcb}")
     val candidateSegmentsShuffle = Random.shuffle(candidateSegments.toSeq) // For the case of all the counts are equal
     val candidateUseCounts = (for (id <- candidateSegmentsShuffle)
       yield (id, segmentServiceCounts.getOrElse(id, 0))).toMap

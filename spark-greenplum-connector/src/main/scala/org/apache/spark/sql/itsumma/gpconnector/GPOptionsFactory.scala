@@ -102,6 +102,10 @@ case class GPOptionsFactory(params: Map[String, String])
   val offsetRestoreSql: String = params.getOrElse("offset.select", "").trim
   val undoSideEffectsSQL: String = params.getOrElse("undo.side.effects.sql", "").trim
   val readStreamAutoCommit: Boolean = params.getOrElse("stream.read.autocommit", "true").toBoolean
+  val detailedTiming: Boolean = params.getOrElse("timing.detail", "false").toBoolean
+  val writeBatchSettleMs: Long = math.max(Utils.timeStringAsMs(params.getOrElse("write.batch.settle.ms", "300ms")), 0L)
+  val writeRetryCount: Int = math.max(params.getOrElse("write.retry.count", "2").toInt, 0)
+  val writeRetryDelayMs: Long = math.max(Utils.timeStringAsMs(params.getOrElse("write.retry.delay", "10s")), 0L)
   val saveMode: SaveMode = params.getOrElse("mode", "append") match {
     case "append" => SaveMode.Append
     case "overwrite" => SaveMode.Overwrite
@@ -155,6 +159,9 @@ case class GPOptionsFactory(params: Map[String, String])
       "offset.update" -> "",
       "offset.select" -> "",
       "undo.side.effects.sql" -> "",
+      "write.batch.settle.ms" -> "",
+      "write.retry.count" -> "",
+      "write.retry.delay" -> "",
       "applicationname" -> "", // Spark-2 case workaround
       "ApplicationName" -> "",
       "mode" -> "",

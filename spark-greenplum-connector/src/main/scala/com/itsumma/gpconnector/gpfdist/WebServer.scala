@@ -27,7 +27,11 @@ class WebServerMetrics {
  * @param port     TCP port number to bind the service
  * @param rmiSlave to communicate data with Spark
  */
-class WebServer(port: Int, rmiSlave: RMISlave, jobAbort: AtomicBoolean, transferComplete: AtomicBoolean, metrics: WebServerMetrics)
+class WebServer(port: Int,
+                rmiSlave: RMISlave,
+                jobAbort: AtomicBoolean,
+                transferComplete: AtomicBoolean,
+                metrics: WebServerMetrics)
   extends Logging
 {
 

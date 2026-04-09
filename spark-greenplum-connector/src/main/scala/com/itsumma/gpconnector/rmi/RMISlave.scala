@@ -401,13 +401,19 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
       }
     }
     if (!NetUtils().waitForCompletion(msMax) {
+      if (jobAbort.get() || coordinatorSqlComplete.get()) {
+        true
+      } else
       if (buffExchange.available == 0)
         flush()
       buffExchange.totalDrain.get() == buffExchange.totalFill.get()
     }) {
       jobAbort.set(true)
-      throw new Exception(s"Buffer transfer incomplete for instanceId=${instanceId}: " +
+      throw new Exception(s"gpfdist stream interrupted before buffered bytes fully drained for instanceId=${instanceId}: " +
         s"fillBytes=${buffExchange.totalFill.get()}, drainBytes=${buffExchange.totalDrain.get()}")
+    }
+    if (jobAbort.get() || coordinatorSqlComplete.get()) {
+      throw new Exception(s"gpfdist stream interrupted or aborted before buffered data transfer completed")
     }
     pcb = pcb.copy(rowCount = rowCount)
     logInfo(s"Calling commit on ${pcb}")
@@ -431,9 +437,11 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
     // Locks until GPFDIST transfer complete
     logTrace(s"commit: sqlTransferComplete=${sqlTransferComplete.get()}")
     if (!NetUtils().waitForCompletion(msMax) {
-      sqlTransferComplete.get()
+      sqlTransferComplete.get() || jobAbort.get() || coordinatorSqlComplete.get()
     })
-      throw new Exception(s"GPFDIST transfer incomplete")
+      throw new Exception(s"gpfdist stream interrupted or aborted before transfer completed")
+    if (jobAbort.get() || (coordinatorSqlComplete.get() && !sqlTransferComplete.get()))
+      throw new Exception(s"gpfdist stream interrupted or aborted before transfer completed")
     rmiDataTargetGuard.synchronized {
       rmiDataTarget = null
     }

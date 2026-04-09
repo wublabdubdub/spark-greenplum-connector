@@ -6,6 +6,7 @@ import org.apache.spark.sql.itsumma.gpconnector.GPOptionsFactory
 
 import java.sql.{Connection, DriverManager, SQLWarning}
 import java.util.Properties
+import java.util.concurrent.atomic.AtomicBoolean
 import scala.language.{postfixOps, reflectiveCalls}
 import scala.util.Try
 import scala.collection.mutable.{HashMap => MutableHashMap, Map => MutableMap}
@@ -17,6 +18,7 @@ class GPClient(optionsFactory: GPOptionsFactory) {
   private def initPool(optionsFactory: GPOptionsFactory): Unit = this.synchronized {
     if (pool != null)
       return
+    GPClient.logRuntimeMarkerOnce()
     import scala.collection.JavaConverters._
     val props = makeConnProps(optionsFactory).asScala.map { case (key, value) => s"$key=$value" }.mkString("; ")
     pool = new BasicDataSource()
@@ -27,7 +29,7 @@ class GPClient(optionsFactory: GPOptionsFactory) {
       pool.setPassword(optionsFactory.password)
     pool.setMaxWaitMillis(optionsFactory.networkTimeout)
     pool.setDefaultTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED)
-    pool.setAutoCommitOnReturn(false)
+    GPClient.setAutoCommitOnReturnCompat(pool, false)
     pool.setDefaultAutoCommit(false)
     pool.setRollbackOnReturn(true)
     pool.setConnectionProperties(props)
@@ -42,6 +44,8 @@ class GPClient(optionsFactory: GPOptionsFactory) {
 }
 
 case object GPClient extends Logging {
+  private val runtimeMarkerLogged = new AtomicBoolean(false)
+  private val runtimeMarkerId = "YMATRIX_MARKER_20260331_ENV_DBCP_R1"
 
   import java.net.{InetAddress, InetSocketAddress, ServerSocket}
 
@@ -56,6 +60,57 @@ case object GPClient extends Logging {
       props.setProperty("currentSchema", searchPathApply)
     }
     props
+  }
+
+  private def loadBuildProperties(): Properties = {
+    val properties = new Properties()
+    var stream = getClass.getResourceAsStream("/version.properties")
+    if (stream == null)
+      stream = getClass.getResourceAsStream("/project.properties")
+    if (stream != null) {
+      try properties.load(stream)
+      finally stream.close()
+    }
+    properties
+  }
+
+  def logRuntimeMarkerOnce(): Unit = {
+    if (!runtimeMarkerLogged.compareAndSet(false, true))
+      return
+    val props = loadBuildProperties()
+    val artifactId = Option(props.getProperty("artifactId")).getOrElse("unknown-artifact")
+    val version = Option(props.getProperty("version")).getOrElse("unknown-version")
+    val codeSource = Option(getClass.getProtectionDomain)
+      .flatMap(pd => Option(pd.getCodeSource))
+      .flatMap(cs => Option(cs.getLocation))
+      .map(_.toString)
+      .getOrElse("unknown-code-source")
+    val markerMsg =
+      s"[ymatrix-jar-marker] marker=${runtimeMarkerId}, artifact=${artifactId}, version=${version}, codeSource=${codeSource}"
+    logWarning(markerMsg)
+    System.err.println(markerMsg)
+  }
+
+  private def invokeBooleanSetter(target: AnyRef, methodName: String, value: Boolean): Boolean = {
+    Try {
+      val method = target.getClass.getMethod(methodName, java.lang.Boolean.TYPE)
+      method.invoke(target, java.lang.Boolean.valueOf(value))
+    }.isSuccess
+  }
+
+  /**
+   * DBCP 2.6.0+ uses setAutoCommitOnReturn(boolean), while older 2.0.x releases
+   * expose setEnableAutoCommitOnReturn(boolean). Try the new API first and
+   * gracefully fall back for older customer runtimes.
+   */
+  def setAutoCommitOnReturnCompat(target: AnyRef, value: Boolean): Unit = {
+    if (invokeBooleanSetter(target, "setAutoCommitOnReturn", value))
+      return
+    if (invokeBooleanSetter(target, "setEnableAutoCommitOnReturn", value)) {
+      logInfo("Fell back to BasicDataSource.setEnableAutoCommitOnReturn for legacy commons-dbcp2 runtime")
+      return
+    }
+    logWarning("Unable to configure BasicDataSource auto-commit-on-return; neither compatible setter is available")
   }
 
   def getConn(optionsFactory: GPOptionsFactory) : Connection = {
