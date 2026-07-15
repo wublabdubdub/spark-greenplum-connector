@@ -617,3 +617,36 @@ spark.read
 4. 最后做大表分批导入或批量导入
 
 这样最容易把 jar、参数、网络、结构和性能问题拆开定位。
+## CN2 发布地址与本地端口平移
+
+当 YDB/MDB segment 必须通过 CN2 和 Nginx 访问 Spark executor，并且发布端口与 Spark 本地端口不同时，可以配置 `server.publish.mapping`。
+
+```scala
+df.write
+  .format("its-ymatrix")
+  .option("url", ymatrixUrl)
+  .option("user", ymatrixUser)
+  .option("password", ymatrixPassword)
+  .option("dbschema", "public")
+  .option("dbtable", "orders_cn2")
+  .option("distributedby", "order_id")
+  .option(
+    "server.publish.mapping",
+    Seq(
+      "172.26.32.28=10.150.0.5:20101-20110->20111-20120",
+      "172.26.32.113=10.150.0.5:20111-20120->20111-20120",
+      "172.26.32.114=10.150.0.5:20121-20130->20111-20120"
+    ).mkString(",")
+  )
+  .save()
+```
+
+参数格式：
+
+```text
+<executor内网IP>=<CN2发布IP>:<发布端口起始>-<发布端口结束>-><本地端口起始>-<本地端口结束>
+```
+
+Connector 只在本地端口段中启动 gpfdist，并按端口位置换算发布端口。例如 `172.26.32.28` 选中本地端口 `20114` 时，外部表发布的地址为 `gpfdist://10.150.0.5:20104/output.pipe`。
+
+发布端口段和本地端口段必须包含相同数量的端口。配置 `server.publish.mapping` 后不能同时配置 `server.port`，本地端口池耗尽时任务会直接失败。

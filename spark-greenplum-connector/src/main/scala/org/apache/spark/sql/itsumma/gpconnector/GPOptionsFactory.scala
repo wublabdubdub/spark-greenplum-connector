@@ -85,6 +85,14 @@ case class GPOptionsFactory(params: Map[String, String])
   val user: String = params.getOrElse("user", null)
   val password: String = params.getOrElse("password", null)
   val serverPort: Int = params.getOrElse("server.port", "0").toInt
+  val serverPublishMapping: Map[String, PublishEndpoint] =
+    ServerPublishMapping.parse(params.getOrElse(ServerPublishMapping.OptionName, ""))
+  if (serverPublishMapping.nonEmpty && serverPort != 0) {
+    throw new IllegalArgumentException(
+      s"${ServerPublishMapping.OptionName} cannot be used together with server.port. " +
+        s"Put per-host port ranges in ${ServerPublishMapping.OptionName} instead."
+    )
+  }
   val truncate: Boolean = params.getOrElse("truncate", "false").toBoolean
   val distributedBy: String = params.getOrElse("distributedby", "").trim
   val partitionClause: String = params.getOrElse("partitionclause","").trim
@@ -115,6 +123,20 @@ case class GPOptionsFactory(params: Map[String, String])
   }
   val actionName: String = params.getOrElse("action.name", tableOrQuery).trim
 
+  def resolvePublishBinding(localHost: String): PublishBinding = {
+    serverPublishMapping.get(localHost) match {
+      case Some(endpoint) =>
+        PublishBinding(localHost, Some(endpoint))
+      case None if serverPublishMapping.nonEmpty =>
+        throw new IllegalArgumentException(
+          s"No ${ServerPublishMapping.OptionName} entry for executor local host '$localHost'. " +
+            s"Known hosts: ${serverPublishMapping.keys.toSeq.sorted.mkString(",")}"
+        )
+      case None =>
+        PublishBinding(localHost, None)
+    }
+  }
+
   /**
    * Dump passed in parameters for debug purposes
    * @return multiline String with key -> value pairs
@@ -144,6 +166,7 @@ case class GPOptionsFactory(params: Map[String, String])
       "server.useHostname" -> "",
       "server.hostEnv" -> "",
       "server.nic" -> "",
+      "server.publish.mapping" -> "",
       "server.timeout" -> "",
       "pool.maxSize" -> "",
       "pool.timeoutMs" -> "",

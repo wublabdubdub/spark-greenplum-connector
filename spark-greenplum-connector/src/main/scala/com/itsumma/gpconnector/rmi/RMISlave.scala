@@ -1,7 +1,7 @@
 package com.itsumma.gpconnector.rmi
 
 import com.itsumma.gpconnector.GPClient
-import com.itsumma.gpconnector.gpfdist.{WebServer, WebServerMetrics}
+import com.itsumma.gpconnector.gpfdist.{PortBinder, WebServer, WebServerMetrics}
 import com.itsumma.gpconnector.rmi.RMISlave.{clientSocketFactory, serverSocketFactory}
 import com.itsumma.gpconnector.utils.ProgressTracker
 import org.apache.spark.internal.Logging
@@ -286,14 +286,27 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
     func match {
       case "startService" => {
         isServiceProvider = true
-        var port = optionsFactory.serverPort // By default port == 0 and WebServer assigns some available
-        webServer = new WebServer(port, this, jobAbort, atLeastOnePostComplete, webServerMetrics)
-        port = webServer.httpPort
-        if (port == 0)
+        val publishBinding = optionsFactory.resolvePublishBinding(instanceHostAddress)
+        webServer = publishBinding.localPortRange match {
+          case Some(range) =>
+            PortBinder.createInRange(range, port =>
+              new WebServer(port, this, jobAbort, atLeastOnePostComplete, webServerMetrics)
+            )
+          case None =>
+            // By default port == 0 and WebServer assigns some available.
+            new WebServer(optionsFactory.serverPort, this, jobAbort, atLeastOnePostComplete, webServerMetrics)
+        }
+        val localPort = webServer.httpPort
+        if (localPort == 0)
           throw new Exception(s"webServer.httpPort returns 0")
-        gpfdistUrl = s"gpfdist://${instanceHostAddress}:${port}/output.pipe"
+        val publishPort = publishBinding.publishPortFor(localPort)
+        gpfdistUrl = s"gpfdist://${publishBinding.publishHost}:${publishPort}/output.pipe"
         retPcb = newPcb.copy(gpfdistUrl = gpfdistUrl)
-        msg = s"GPFDIST service started at ${retPcb}"
+        msg = s"GPFDIST service started at ${retPcb}, " +
+          s"localHost=${publishBinding.localHost}, publishHost=${publishBinding.publishHost}, " +
+          s"localPort=$localPort, publishPort=$publishPort, " +
+          s"localPortRange=${publishBinding.localPortRange.map(_.toString).getOrElse("default")}, " +
+          s"publishPortRange=${publishBinding.publishPortRange.map(_.toString).getOrElse("default")}"
       }
       case "sqlTransferComplete" => {
         if (isServiceProvider && readOrWrite) {

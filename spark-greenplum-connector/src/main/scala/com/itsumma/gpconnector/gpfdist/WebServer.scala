@@ -35,8 +35,8 @@ class WebServer(port: Int,
   extends Logging
 {
 
-  private val executor = Executors.newFixedThreadPool(10)
   val server: HttpServer = HttpServer.create(new InetSocketAddress(port), 0)
+  private val executor = Executors.newFixedThreadPool(10)
 
   def httpPort: Int = server.getAddress.getPort
 
