@@ -14,6 +14,7 @@ package com.itsumma.gpconnector.rmi
  * @param rowCount Long, default 0, number of rows transferred by partition handler
  * @param status String, default null, single char of [i{initial}c{commit}]
  * @param gpfdistUrl String, URL of GPFDIST service available for this handler
+ * @param failureMessage String, first failure reason propagated with an abort command
  */
 case class PartitionControlBlock(
                                  handler: TaskHandler,
@@ -24,10 +25,12 @@ case class PartitionControlBlock(
                                  gpSegmentId: String = null,
                                  rowCount: Long = 0,
                                  status: String = null,
-                                 gpfdistUrl: String = null
+                                 gpfdistUrl: String = null,
+                                 failureMessage: String = null
                                 ) {
   override def toString: String = s"""{"queryId": "$queryId", "partId": "$partId",
                                     "instanceId": "$instanceId", "nodeIp": "$nodeIp", "dir": "$dir",
                                     "executorId": "$executorId", "batchNo": $batchNo, "gpSegmentId": $gpSegmentId,
-                                    "rowCount": $rowCount, "status": "$status", "gpfdistUrl": "$gpfdistUrl"}"""
+                                    "rowCount": $rowCount, "status": "$status", "gpfdistUrl": "$gpfdistUrl",
+                                    "hasFailure": ${failureMessage != null && failureMessage.nonEmpty}}"""
 }

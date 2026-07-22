@@ -312,14 +312,15 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
     newBatchNo
   }
 
-  private def broadcastCoordinatorCommand(cmd: String): Unit = {
+  private def broadcastCoordinatorCommand(cmd: String, failureMessage: String = null): Unit = {
     val instances = this.synchronized {
       pcbByInstanceId.toList
     }
     instances.foreach { instance =>
       try {
         logDebug(s"Sending ${cmd} to the slave ${instance._1}")
-        val pcb: PartitionControlBlock = instance._2.handler.coordinatorAsks(instance._2, cmd)
+        val commandPcb = instance._2.copy(failureMessage = failureMessage)
+        val pcb: PartitionControlBlock = instance._2.handler.coordinatorAsks(commandPcb, cmd)
         if (pcb != null) {
           logTrace(s"commitBatch: sent ${cmd} to partition reader instances ${instance._1}")
         } else {
@@ -333,8 +334,8 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
   }
 
   def failJob(message: String, notifySlaves: Boolean = true): Unit = {
-    this.synchronized {
-      if (message != null && message.nonEmpty) {
+    val failureMessage = this.synchronized {
+      if ((abortMsg == null || abortMsg.isEmpty) && message != null && message.nonEmpty) {
         abortMsg = message
       } else if (abortMsg == null || abortMsg.isEmpty) {
         abortMsg = s"Job ${queryId} aborted"
@@ -343,9 +344,10 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
         nFails.incrementAndGet()
       }
       jobAbort.set(true)
+      abortMsg
     }
     if (notifySlaves) {
-      broadcastCoordinatorCommand("sqlTransferAbort")
+      broadcastCoordinatorCommand("sqlTransferAbort", failureMessage)
     }
   }
 
@@ -355,7 +357,10 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
         abortMsg = message
       }
     }
-    broadcastCoordinatorCommand("sqlTransferAbort")
+    val failureMessage = this.synchronized {
+      Option(abortMsg).filter(_.nonEmpty).getOrElse(s"Job ${queryId} batch retry")
+    }
+    broadcastCoordinatorCommand("sqlTransferAbort", failureMessage)
     this.synchronized {
       pcbByInstanceId.clear()
       partUrlByInstId.clear()

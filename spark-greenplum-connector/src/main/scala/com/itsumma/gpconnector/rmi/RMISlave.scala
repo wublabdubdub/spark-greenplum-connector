@@ -221,7 +221,8 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
   private val coordinatorSqlComplete: AtomicBoolean = new AtomicBoolean(false)
   private val atLeastOnePostComplete: AtomicBoolean = new AtomicBoolean(false)
   val sqlTransferComplete: AtomicBoolean = new AtomicBoolean(false)
-  val jobAbort: AtomicBoolean = new AtomicBoolean(false)
+  private val transferAbort = new TransferAbortState(queryId, instanceId)
+  val jobAbort: AtomicBoolean = transferAbort.aborted
 
   try {
     if (server != null) {
@@ -321,7 +322,7 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
         msg = s"${retPcb}"
       }
       case "sqlTransferAbort" => {
-        jobAbort.set(true)
+        transferAbort.abort(newPcb.failureMessage)
         coordinatorSqlComplete.set(true)
         retPcb = newPcb.copy()
         msg = s"${retPcb}"
@@ -630,6 +631,7 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
       }
       ret = tryGet(rnd.nextInt(10) + 1)
     }
+    transferAbort.throwIfAborted()
     if (!jobAbort.get() && sqlTransferComplete.get() && (ret == null)) ret = tryGet(1)
     if (ret != null) {
       if (ret.position() == 0)
