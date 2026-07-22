@@ -317,7 +317,7 @@ object SparkSchemaUtil {
       case None => {
         val sql = schemaLookupSql(tableOrQuery).getOrElse(return new StructType())
         if (!conn.getAutoCommit)
-          conn.commit()
+          conn.rollback()
         using(conn.prepareStatement(sql)) {
           stmt => {
             val rsmd = stmt.getMetaData

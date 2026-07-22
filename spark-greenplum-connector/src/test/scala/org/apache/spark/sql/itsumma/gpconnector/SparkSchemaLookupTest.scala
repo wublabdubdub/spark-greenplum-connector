@@ -13,6 +13,7 @@ object SparkSchemaLookupTest {
     assert(SparkSchemaUtil.schemaLookupSql("   ").isEmpty)
 
     val prepareCount = new AtomicInteger(0)
+    val rollbackCount = new AtomicInteger(0)
     val missingTable = new SQLException(
       "ERROR: relation \"cdm_dwyz.not_exist_table_xxx\" does not exist")
     val statement = proxy(classOf[PreparedStatement]) { (method, _) =>
@@ -24,11 +25,14 @@ object SparkSchemaLookupTest {
     }
     val connection = proxy(classOf[Connection]) { (method, _) =>
       method.getName match {
-        case "getAutoCommit" => java.lang.Boolean.TRUE
+        case "getAutoCommit" => java.lang.Boolean.FALSE
         case "prepareStatement" =>
           prepareCount.incrementAndGet()
           statement
-        case "close" => null
+        case "commit" | "close" => null
+        case "rollback" =>
+          rollbackCount.incrementAndGet()
+          null
         case _ => defaultValue(method.getReturnType)
       }
     }
@@ -43,6 +47,7 @@ object SparkSchemaLookupTest {
     }
     assert(thrown.getMessage.contains("relation \"cdm_dwyz.not_exist_table_xxx\" does not exist"))
     assert(prepareCount.get() >= 2)
+    assert(rollbackCount.get() >= 1)
     println("SPARK_SCHEMA_LOOKUP_TEST_OK")
   }
 

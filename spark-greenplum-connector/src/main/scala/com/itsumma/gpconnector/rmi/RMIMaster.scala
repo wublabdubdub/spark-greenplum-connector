@@ -335,13 +335,12 @@ class RMIMaster(optionsFactory: GPOptionsFactory,
 
   def failJob(message: String, notifySlaves: Boolean = true): Unit = {
     val failureMessage = this.synchronized {
-      if ((abortMsg == null || abortMsg.isEmpty) && message != null && message.nonEmpty) {
-        abortMsg = message
+      if (nFails.get() == 0) {
+        abortMsg = Option(message).map(_.trim).filter(_.nonEmpty)
+          .getOrElse(s"Job ${queryId} aborted")
+        nFails.incrementAndGet()
       } else if (abortMsg == null || abortMsg.isEmpty) {
         abortMsg = s"Job ${queryId} aborted"
-      }
-      if (nFails.get() == 0) {
-        nFails.incrementAndGet()
       }
       jobAbort.set(true)
       abortMsg
