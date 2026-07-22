@@ -284,6 +284,17 @@ object SparkSchemaUtil {
   }
 
   /**
+   * Builds the metadata query used for schema inference. An empty source is valid only
+   * for custom sqlTransfer statements that use the connector placeholder schema.
+   */
+  private[gpconnector] def schemaLookupSql(tableOrQuery: String): Option[String] = {
+    val target = tableOrQuery.trim
+    if (target.isEmpty) None
+    else if (GPTarget(target).isQuery) Some(target)
+    else Some(s"select * from $target")
+  }
+
+  /**
    * Extracts columns metadata list as {@link StructType} instance (i.e. Spark-native data schema representation)
    * from the GP data source given by <b>tableOrQuery</b> parameter,
    * <p>which can be a table name or SQL SELECT operator.
@@ -304,12 +315,7 @@ object SparkSchemaUtil {
     JdbcUtils.getSchemaOption(conn, optionsFactory.getJDBCOptions(tableOrQuery)) match {
       case Some(schema) => schema
       case None => {
-        val targetType: GPTarget = GPTarget(tableOrQuery)
-        var sql: String = tableOrQuery
-        if (!targetType.isQuery) {
-          if (GPClient.tableExists(conn, tableOrQuery)) sql = s"select * from $tableOrQuery"
-          else return new StructType()
-        }
+        val sql = schemaLookupSql(tableOrQuery).getOrElse(return new StructType())
         if (!conn.getAutoCommit)
           conn.commit()
         using(conn.prepareStatement(sql)) {
