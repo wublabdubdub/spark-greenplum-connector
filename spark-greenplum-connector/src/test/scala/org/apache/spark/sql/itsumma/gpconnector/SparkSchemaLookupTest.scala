@@ -34,7 +34,8 @@ object SparkSchemaLookupTest {
     }
     val options = GPOptionsFactory(Map(
       "url" -> "jdbc:postgresql://localhost/test",
-      "dbtable" -> "cdm_dwyz.not_exist_table_xxx"
+      "dbtable" -> "cdm_dwyz.not_exist_table_xxx",
+      "applicationname" -> "spark-schema-lookup-test"
     ))
     val thrown = expectSqlFailure {
       SparkSchemaUtil.getGreenplumTableSchema(
