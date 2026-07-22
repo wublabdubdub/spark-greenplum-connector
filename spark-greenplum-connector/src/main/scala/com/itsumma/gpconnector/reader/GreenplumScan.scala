@@ -2,7 +2,7 @@ package com.itsumma.gpconnector.reader
 
 import com.itsumma.gpconnector.rmi.GPConnectorModes.GPConnectorMode
 import com.itsumma.gpconnector.{GPClient, GPOffset, GreenplumRowSet}
-import com.itsumma.gpconnector.rmi.{GPConnectorModes, NetUtils, RMIMaster}
+import com.itsumma.gpconnector.rmi.{GPConnectorModes, NetUtils, RMIMaster, TransferFailure}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.connector.read.partitioning.Partitioning
 import org.apache.spark.sql.connector.read.streaming.{MicroBatchStream, Offset}
@@ -12,7 +12,7 @@ import org.apache.spark.sql.types.StructType
 
 import java.sql.Connection
 import java.util.{OptionalLong, UUID}
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicLong, AtomicReference}
 import org.apache.spark.sql.itsumma.gpconnector.SparkSchemaUtil.guessMaxParallelTasks
 
 //import java.util.concurrent.{Executor, Executors}
@@ -34,6 +34,7 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
   dbConnection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED)
 
   private val aborted = new AtomicBoolean(false)
+  private val sqlFailure = new AtomicReference[Throwable](null)
   private val done = new AtomicBoolean(false)
   val processing = new AtomicBoolean(false)
   private val settleMs = new AtomicLong(0)
@@ -191,6 +192,24 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
   }
 
   private class SqlThread() extends Runnable {
+    private def fail(failure: Throwable): Unit = {
+      processing.set(false)
+      aborted.set(true)
+      if (sqlFailure.compareAndSet(null, failure)) {
+        val message = TransferFailure.message(failure)
+        logError(s"SqlThread queryId=$queryId aborted: $message", failure)
+        if (rmiMaster != null) {
+          try {
+            rmiMaster.failJob(message, notifySlaves = true)
+          } catch {
+            case notifyFailure: Throwable =>
+              logWarning(s"Unable to notify Spark readers about queryId=$queryId failure: " +
+                s"${TransferFailure.message(notifyFailure)}")
+          }
+        }
+      }
+    }
+
     def run(): Unit = {
       try {
         var (numActiveTasks,
@@ -329,13 +348,19 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
                     dbConnection.commit()
                 }
               }
+            } catch {
+              case failure: Throwable =>
+                fail(failure)
+                throw failure
             } finally {
-              dbConnectionGuard.synchronized {
-                if (!useTempExtTables && GPClient.tableExists(dbConnection, externalTableName)) {
-                  try {
-                    GPClient.executeStatement(dbConnection, s"DROP EXTERNAL TABLE $externalTableName")
-                  } catch {
-                    case e: Exception => logError(s"${e.getMessage}")
+              if (!aborted.get()) {
+                dbConnectionGuard.synchronized {
+                  if (!useTempExtTables && GPClient.tableExists(dbConnection, externalTableName)) {
+                    try {
+                      GPClient.executeStatement(dbConnection, s"DROP EXTERNAL TABLE $externalTableName")
+                    } catch {
+                      case e: Exception => logError(s"${e.getMessage}")
+                    }
                   }
                 }
               }
@@ -354,6 +379,8 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
           /** Batch loop end */
         }
 
+      } catch {
+        case failure: Throwable => fail(failure)
       } finally {
         try {
           logDebug(s"\nSqlThread terminated: pass ${sqlThreadPass.get()}:" +
