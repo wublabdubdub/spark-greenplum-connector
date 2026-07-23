@@ -556,64 +556,55 @@ case class SparkSchemaUtil(dbTimeZoneName: String = java.time.ZoneId.systemDefau
    *         array of unsupported filters and array of supported filters
    */
   def pushFilters(filters: Array[Filter]): (String, Array[Filter], Array[Filter]) = {
-    if (filters.isEmpty) {
-      return ("", Array[Filter](), Array[Filter]())
+    val compiled = filters.map(filter => filter -> compileFilter(filter))
+    val unsupportedFilters = compiled.collect {
+      case (filter, None) => filter
     }
+    val supportedFilters = compiled.collect {
+      case (filter, Some(_)) => filter
+    }
+    val whereClause = compiled.collect {
+      case (_, Some(sql)) => s"($sql)"
+    }.mkString(" AND ")
+    (whereClause, unsupportedFilters, supportedFilters)
+  }
 
-    val filter = new StringBuilder("")
-    val unsupportedFilters = Array[Filter]();
-    var i = 0
-
-    filters.foreach(f => {
-      // Assume conjunction for multiple filters, unless otherwise specified
-      if (i > 0) {
-        filter.append(" AND")
-      }
-
-      f match {
-        // Spark 1.3.1+ supported filters
-        case And(leftFilter, rightFilter) => {
-          val (whereClause, currUnsupportedFilters, _) = pushFilters(Array(leftFilter, rightFilter))
-          if (currUnsupportedFilters.isEmpty)
-            filter.append(whereClause)
-          else
-            unsupportedFilters :+ f
-        }
-        case Or(leftFilter, rightFilter) => {
-          val (whereLeftClause, leftUnsupportedFilters, _) = pushFilters(Array(leftFilter))
-          val (whereRightClause, rightUnsupportedFilters, _) = pushFilters(Array(rightFilter))
-          if (leftUnsupportedFilters.isEmpty && rightUnsupportedFilters.isEmpty) {
-            filter.append(whereLeftClause + " OR " + whereRightClause)
-          }
-          else {
-            unsupportedFilters :+ f
-          }
-        }
-        case Not(aFilter) => {
-          val (whereClause, currUnsupportedFilters, _) = pushFilters(Array(aFilter))
-          if (currUnsupportedFilters.isEmpty)
-            filter.append(" NOT " + whereClause)
-          else
-            unsupportedFilters :+ f
-        }
-        case EqualTo(attr, value) => filter.append(s" ${escapeKey(attr)} = ${compileValue(value)}")
-        case GreaterThan(attr, value) => filter.append(s" ${escapeKey(attr)} > ${compileValue(value)}")
-        case GreaterThanOrEqual(attr, value) => filter.append(s" ${escapeKey(attr)} >= ${compileValue(value)}")
-        case LessThan(attr, value) => filter.append(s" ${escapeKey(attr)} < ${compileValue(value)}")
-        case LessThanOrEqual(attr, value) => filter.append(s" ${escapeKey(attr)} <= ${compileValue(value)}")
-        case IsNull(attr) => filter.append(s" ${escapeKey(attr)} IS NULL")
-        case IsNotNull(attr) => filter.append(s" ${escapeKey(attr)} IS NOT NULL")
-        case In(attr, values) => filter.append(s" ${escapeKey(attr)} IN ${values.map(compileValue).mkString("(", ",", ")")}")
-        case StringStartsWith(attr, value) => filter.append(s" ${escapeKey(attr)} LIKE ${compileValue(value + "%")}")
-        case StringEndsWith(attr, value) => filter.append(s" ${escapeKey(attr)} LIKE ${compileValue("%" + value)}")
-        case StringContains(attr, value) => filter.append(s" ${escapeKey(attr)} LIKE ${compileValue("%" + value + "%")}")
-        case _ => unsupportedFilters :+ f
-      }
-
-      i = i + 1
-    })
-
-    (filter.toString(), unsupportedFilters, filters diff unsupportedFilters)
+  private def compileFilter(filter: Filter): Option[String] = filter match {
+    case And(leftFilter, rightFilter) =>
+      for {
+        left <- compileFilter(leftFilter)
+        right <- compileFilter(rightFilter)
+      } yield s"($left) AND ($right)"
+    case Or(leftFilter, rightFilter) =>
+      for {
+        left <- compileFilter(leftFilter)
+        right <- compileFilter(rightFilter)
+      } yield s"($left) OR ($right)"
+    case Not(childFilter) =>
+      compileFilter(childFilter).map(sql => s"NOT ($sql)")
+    case EqualTo(attr, value) =>
+      Some(s"${escapeKey(attr)} = ${compileValue(value)}")
+    case GreaterThan(attr, value) =>
+      Some(s"${escapeKey(attr)} > ${compileValue(value)}")
+    case GreaterThanOrEqual(attr, value) =>
+      Some(s"${escapeKey(attr)} >= ${compileValue(value)}")
+    case LessThan(attr, value) =>
+      Some(s"${escapeKey(attr)} < ${compileValue(value)}")
+    case LessThanOrEqual(attr, value) =>
+      Some(s"${escapeKey(attr)} <= ${compileValue(value)}")
+    case IsNull(attr) =>
+      Some(s"${escapeKey(attr)} IS NULL")
+    case IsNotNull(attr) =>
+      Some(s"${escapeKey(attr)} IS NOT NULL")
+    case In(attr, values) =>
+      Some(s"${escapeKey(attr)} IN ${values.map(compileValue).mkString("(", ",", ")")}")
+    case StringStartsWith(attr, value) =>
+      Some(s"${escapeKey(attr)} LIKE ${compileValue(value + "%")}")
+    case StringEndsWith(attr, value) =>
+      Some(s"${escapeKey(attr)} LIKE ${compileValue("%" + value)}")
+    case StringContains(attr, value) =>
+      Some(s"${escapeKey(attr)} LIKE ${compileValue("%" + value + "%")}")
+    case _ => None
   }
 
   def internalRowToText(schema: StructType, row: InternalRow, fieldDelimiter: Char = '\t'): String = {
