@@ -194,12 +194,8 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
       val msg = s"Unable connect from ${instanceHostAddress}/${instanceId} to RMIMaster at ${serverAddress}: " +
         s"${e.getClass.getCanonicalName} " +
         s"${e.getMessage}"
-      if (!readOrWrite) {
-        logError(msg)
-        throw e
-      }
-      logInfo(msg)
-      null
+      logError(msg)
+      throw new IllegalStateException(msg, e)
   }
   // private var partList: Set[ITSIpcClient] = Set[ITSIpcClient]() //server.participantsList(instanceSegmentId)
   private val localWriteBufferGuard: AnyRef = new Object()
@@ -223,21 +219,35 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
   val sqlTransferComplete: AtomicBoolean = new AtomicBoolean(false)
   private val transferAbort = new TransferAbortState(queryId, instanceId)
   val jobAbort: AtomicBoolean = transferAbort.aborted
+  private var readStartupState: ReadStartupState =
+    ReadStartupState.disconnected
 
   try {
-    if (server != null) {
-      pcb = server.asInstanceOf[TaskCoordinator].handlerAsks(pcb, "checkIn", optionsFactory.networkTimeout)
-      instanceSegmentId = pcb.gpSegmentId
-      gpfdistUrl = pcb.gpfdistUrl
-    }
+    pcb = server.asInstanceOf[TaskCoordinator]
+      .handlerAsks(pcb, "checkIn", optionsFactory.networkTimeout)
+    instanceSegmentId = pcb.gpSegmentId
+    gpfdistUrl = pcb.gpfdistUrl
     if (instanceSegmentId != null) {
       connected = true
+      readStartupState = ReadStartupState.connected
     } else {
       sqlTransferComplete.set(true)
+      readStartupState = ReadStartupState.noWork
     }
   } catch {
-    case ex: java.rmi.NoSuchObjectException => logDebug(s"${ex.getClass.getName} ${ex.getMessage}")
+    case failure: Exception =>
+      val message =
+        s"Unable to check in read instance ${instanceId} for query ${queryId}: " +
+          s"${failure.getClass.getCanonicalName}: ${failure.getMessage}"
+      readStartupState = ReadStartupState.failed(message)
+      transferAbort.abort(message)
+      logError(message)
+      throw new IllegalStateException(message, failure)
   }
+
+  def isNormalNoWork: Boolean = readStartupState.isNormalEof
+
+  def throwIfReadStartupFailed(): Unit = readStartupState.throwIfFailed()
 
   def webLoopMs: Long = {
     webServerMetrics.webLoopMs.get()

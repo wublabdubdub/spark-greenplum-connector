@@ -60,8 +60,21 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
 
   override def next(): Boolean = this.synchronized {
     dataLine = null
-    if (rmiSlave == null || !rmiSlave.connected)
+    if (rmiSlave == null) {
+      if (eofReached) return false
+      throw new IllegalStateException(
+        s"Reader for query ${queryId} is closed before EOF")
+    }
+    rmiSlave.throwIfReadStartupFailed()
+    if (!rmiSlave.connected && rmiSlave.isNormalNoWork) {
+      eofReached = true
+      closeInternal()
       return false
+    }
+    if (!rmiSlave.connected) {
+      throw new IllegalStateException(
+        s"Reader for query ${queryId} is not connected and has no no-work response")
+    }
     if (lines.nonEmpty) {
       dataLine = lines.dequeue()
       return true
@@ -142,6 +155,7 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
       return
     var rmiPutMs: Long = 0
     var gpfReport: String = ""
+    var closeFailure: Throwable = null
     logTrace(s"closeInternal enter, eofReached=${eofReached}")
     try {
       progressTracker.trackProgress("gpfCommitMs") {
@@ -158,8 +172,10 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
       case e: Exception if RMISlave.isBenignRemoteShutdown(e) =>
         logInfo(s"Ignoring remote shutdown while closing ${gpfdistUrl}, epoch=${epochId}: " +
           s"${e.getClass.getCanonicalName}: ${e.getMessage}")
-      case e: Exception => logError(s"${e.getClass.getCanonicalName}:${e.getMessage} " +
-        s"${e.getStackTrace.mkString("", "\n", "")}")
+      case e: Exception =>
+        closeFailure = e
+        logError(s"${e.getClass.getCanonicalName}:${e.getMessage} " +
+          s"${e.getStackTrace.mkString("", "\n", "")}")
     } finally {
       progressTracker.trackProgress("gpfStopMs") {
         rmiPutMs = rmiSlave.stop
@@ -170,5 +186,6 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
       s"rowCount=${rowCount.get()}, rmiPutMs=${rmiPutMs}, rmiGetMs=${rmiGetMs.get()}," +
       s"\n${progressTracker.reportTimeTaken()},\n${gpfReport}")
     lines.clear()
+    if (closeFailure != null) throw closeFailure
   }
 }

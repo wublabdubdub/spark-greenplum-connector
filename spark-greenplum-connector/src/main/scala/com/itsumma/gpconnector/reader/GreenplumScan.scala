@@ -102,6 +102,15 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
 
   private val toBatchCallNo: AtomicLong = new AtomicLong(0)
 
+  private[reader] def throwIfSqlFailed(): Unit = {
+    val failure = sqlFailure.get()
+    if (failure != null) {
+      throw new IllegalStateException(
+        TransferFailure.message(failure),
+        failure)
+    }
+  }
+
   private def gpConnect(autoCommit: Boolean = false): Connection = {
     dbConnectionGuard.synchronized {
       if (dbConnection == null) {
@@ -134,6 +143,7 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
   private val nPlanCalls = new AtomicLong(0)
   private val planDone = new AtomicBoolean(false)
   def planInputPartitions(): Array[InputPartition] = {
+    throwIfSqlFailed()
     /**
      * Note: Spark calls this method too often, usually 3 times per every available executor per each batch.
      * We have to fight it tough here.
@@ -180,6 +190,7 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
       logDebug(s"\nStarting new batch, queryId=${queryId} ..")
       sqlThread.start()
     }
+    throwIfSqlFailed()
     inputPartitions.toArray
   }
 
@@ -448,6 +459,7 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
   }
 
   private def plainNumPartitions(): Int = {
+    throwIfSqlFailed()
     gpConnect()
     val numPartsPlan = numParts.synchronized {
       dbConnectionGuard.synchronized {
@@ -458,6 +470,7 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
     if (rmiMaster != null)
       rmiMaster.setGpSegmentsNum(numPartsPlan)
     logDebug(s"outputPartitioning().numPartitions() = ${numPartsPlan}")
+    throwIfSqlFailed()
     numPartsPlan
   }
 

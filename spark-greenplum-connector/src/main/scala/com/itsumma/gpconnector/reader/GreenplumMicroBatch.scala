@@ -43,15 +43,18 @@ class GreenplumMicroBatch(optionsFactory: GPOptionsFactory,
   }
 
   override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition] = {
+    greenplumScan.throwIfSqlFailed()
     greenplumScan.setOffsetRange(Option[Offset](start), Option[Offset](end))
   }
 
   private var readerFactory: GreenplumPartitionReaderFactory = null
   override def createReaderFactory(): PartitionReaderFactory = {
+    greenplumScan.throwIfSqlFailed()
     NetUtils().waitForCompletion(optionsFactory.networkTimeout) {
       //greenplumScan.planDone.get() &&
       !greenplumScan.processing.get()
     }
+    greenplumScan.throwIfSqlFailed()
     if (greenplumScan.rmiMaster == null)
       throw new IllegalStateException(s"queryId=${queryId}: createReaderFactory called before planInputPartitions")
     val registryAddress = greenplumScan.rmiMaster.rmiRegistryAddress
