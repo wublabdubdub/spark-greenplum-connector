@@ -41,6 +41,13 @@ class GPClient(optionsFactory: GPOptionsFactory) {
     conn
   }
 
+  def close(): Unit = this.synchronized {
+    if (pool != null) {
+      pool.close()
+      pool = null
+    }
+  }
+
 }
 
 case object GPClient extends Logging {
