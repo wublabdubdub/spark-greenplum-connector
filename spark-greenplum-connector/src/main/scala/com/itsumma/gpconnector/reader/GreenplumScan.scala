@@ -20,7 +20,8 @@ import scala.collection.mutable.ListBuffer
 
 class GreenplumScan(optionsFactory: GPOptionsFactory,
                     rowSet: GreenplumRowSet,
-                    schema: StructType,
+                    sourceSchema: StructType,
+                    outputSchema: StructType,
                     whereClause: String
                    )
   extends Scan
@@ -47,7 +48,7 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
   private val prevEpoch = new AtomicLong(-1)
   private val queryId: String = SparkSchemaUtil.stripChars(UUID.randomUUID.toString, "-")
   private val tableOrQuery: String = optionsFactory.tableOrQuery
-  if (tableOrQuery.isEmpty && schema.isEmpty)
+  if (tableOrQuery.isEmpty && sourceSchema.isEmpty)
     throw new IllegalArgumentException(s"Must pass a source table name or sql query string in the dbtable option")
   private val targetDetails: GPTarget = GPTarget(tableOrQuery)
   private val dbDefaultSchemaName: String = GPClient.checkDbObjSearchPath(dbConnection, optionsFactory.dbSchema)
@@ -73,6 +74,18 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
     if (optionsFactory.distributedBy.nonEmpty) optionsFactory.distributedBy
     else distributionPol
   )
+  private val schemaPlan = ReadSchemaPlan.build(
+    sourceSchema,
+    outputSchema,
+    distributedByClause,
+    distributionColNames)
+  private val transferSchema = schemaPlan.transferSchema
+  if (schemaPlan.unresolvedDistributionColumns.nonEmpty) {
+    logWarning(
+      s"Unable to resolve distribution columns " +
+        s"${schemaPlan.unresolvedDistributionColumns.mkString(",")} " +
+        s"from source schema; using distributed randomly for the read external table")
+  }
   dbConnectionGuard.synchronized {
     if (!dbConnection.getAutoCommit)
       dbConnection.commit()
@@ -81,9 +94,11 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
   }
   logDebug(s"distributionPol=$distributionPol,\n" +
     s"tblSchema=${targetDetails.getTableSchema(dbDefaultSchemaName)},\n" +
-    s"distributedByClause=$distributedByClause,\n")
+    s"distributedByClause=${schemaPlan.distributionClause},\n" +
+    s"outputSchema=${outputSchema.simpleString},\n" +
+    s"transferSchema=${transferSchema.simpleString},\n")
 
-  override def readSchema(): StructType = schema
+  override def readSchema(): StructType = outputSchema
 
   private val toBatchCallNo: AtomicLong = new AtomicLong(0)
 
@@ -174,7 +189,12 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
     toBatchCallNo.incrementAndGet()
     if (toBatchCallNo.get() == 1) {
       connectorMode = GPConnectorModes.Batch
-      batch = new GreenplumBatch(optionsFactory, queryId, schema, this)
+      batch = new GreenplumBatch(
+        optionsFactory,
+        queryId,
+        outputSchema,
+        transferSchema,
+        this)
     }
     logDebug(s"toBatch callNo=${toBatchCallNo.get()}")
     batch
@@ -185,7 +205,12 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
     toBatchCallNo.incrementAndGet()
     if (toBatchCallNo.get() == 1) {
       connectorMode = GPConnectorModes.MicroBatch
-      microBatch = new GreenplumMicroBatch(optionsFactory, queryId, schema, this)
+      microBatch = new GreenplumMicroBatch(
+        optionsFactory,
+        queryId,
+        outputSchema,
+        transferSchema,
+        this)
     }
     logDebug(s"toMicroBatchStream callNo=${toBatchCallNo.get()}")
     microBatch
@@ -261,8 +286,8 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
             logTrace(s" SqlThread pass ${sqlThreadPass.get()}: queryId=${queryId}, " +
               s"locationClause=(${locationClause.toString()})")
             try {
-              var schemaOrPlaceholder = schema
-              var distributedBy = distributedByClause
+              var schemaOrPlaceholder = transferSchema
+              var distributedBy = schemaPlan.distributionClause
               if (schemaOrPlaceholder.isEmpty) {
                 schemaOrPlaceholder = SparkSchemaUtil.getGreenplumPlaceholderSchema(optionsFactory)
                 distributedBy = ""
@@ -290,8 +315,8 @@ class GreenplumScan(optionsFactory: GPOptionsFactory,
                 GPClient.executeStatement(dbConnection, createExternalTable)
               }
               val colListInsert = SparkSchemaUtil.getGreenplumTableColumns(schemaOrPlaceholder, GpTableTypes.None)
-              val colListSelect = if (schema.nonEmpty) {
-                SparkSchemaUtil.getGreenplumSelectColumns(schema, GpTableTypes.Target)
+              val colListSelect = if (transferSchema.nonEmpty) {
+                SparkSchemaUtil.getGreenplumSelectColumns(transferSchema, GpTableTypes.Target)
               } else "null"
               var insertSelectSql = ""
               if (optionsFactory.sqlTransfer.isEmpty) {

@@ -8,7 +8,8 @@ import org.apache.spark.sql.types.StructType
 case class GreenplumPartitionReaderFactory (
                                optionsFactory: GPOptionsFactory,
                                queryId: String,
-                               schema: StructType,
+                               outputSchema: StructType,
+                               transferSchema: StructType,
                                rmiRegistry: String
                              )
   extends PartitionReaderFactory
@@ -17,7 +18,11 @@ case class GreenplumPartitionReaderFactory (
     if (rmiRegistry == null)
       throw new IllegalArgumentException(s"GreenplumPartitionReaderFactory: " +
         s"called with rmiRegistry==null for ${queryId}")
-    val pr = new GreenplumInputPartitionReader(optionsFactory, queryId, schema,
+    val pr = new GreenplumInputPartitionReader(
+      optionsFactory,
+      queryId,
+      outputSchema,
+      transferSchema,
       partition.asInstanceOf[GreenplumInputPartitionMeta].getPartNo, rmiRegistry)
     pr
   }

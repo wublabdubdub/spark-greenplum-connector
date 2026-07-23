@@ -10,7 +10,8 @@ import org.apache.spark.sql.types.StructType
 
 class GreenplumMicroBatch(optionsFactory: GPOptionsFactory,
                           queryId: String,
-                          schema: StructType,
+                          outputSchema: StructType,
+                          transferSchema: StructType,
                           greenplumScan: GreenplumScan)
   extends SupportsAdmissionControl
   with MicroBatchStream
@@ -56,7 +57,12 @@ class GreenplumMicroBatch(optionsFactory: GPOptionsFactory,
     val registryAddress = greenplumScan.rmiMaster.rmiRegistryAddress
     logDebug(s"queryId ${queryId}: new PartitionReaderFactory created")
     if (readerFactory == null)
-      readerFactory = GreenplumPartitionReaderFactory(optionsFactory, queryId, schema, registryAddress)
+      readerFactory = GreenplumPartitionReaderFactory(
+        optionsFactory,
+        queryId,
+        outputSchema,
+        transferSchema,
+        registryAddress)
     readerFactory
   }
 }

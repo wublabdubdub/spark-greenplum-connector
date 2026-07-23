@@ -23,7 +23,8 @@ import scala.language.postfixOps
 
 class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
                                     queryId: String,
-                                    schema: StructType,
+                                    outputSchema: StructType,
+                                    transferSchema: StructType,
                                     partitionNo: Int,
                                     rmiRegistry: String
                                     )
@@ -35,10 +36,12 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
   private val exId: String = SparkEnv.get.executorId
   private val progressTracker: ProgressTracker = new ProgressTracker()
 
-  private var schemaOrPlaceholder = schema
+  private var schemaOrPlaceholder = transferSchema
   if (schemaOrPlaceholder.isEmpty) {
     schemaOrPlaceholder = SparkSchemaUtil.getGreenplumPlaceholderSchema(optionsFactory)
   }
+  private val rowProjector =
+    new ReadRowProjector(schemaOrPlaceholder, outputSchema)
   private val fieldDelimiter = '\t'
   private val lines = new mutable.Queue[InternalRow]()
   private var dataLine: InternalRow = null
@@ -92,10 +95,12 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
               if (sliceStart < ix) new String(newData.slice(sliceStart, ix), StandardCharsets.UTF_8) else ""
             }
             val fields = progressTracker.trackProgress("splitFields") {
-              if (schema.nonEmpty) rowString.split(fieldDelimiter) else "".split(fieldDelimiter)
+              if (transferSchema.nonEmpty) rowString.split(fieldDelimiter) else "".split(fieldDelimiter)
             }
             val row = progressTracker.trackProgress("parseFields") {
-              SparkSchemaUtil(optionsFactory.dbTimezone).textToInternalRow(schemaOrPlaceholder, fields)
+              val transferRow = SparkSchemaUtil(optionsFactory.dbTimezone)
+                .textToInternalRow(schemaOrPlaceholder, fields)
+              rowProjector.project(transferRow)
             }
             val startEnq = System.nanoTime()
             convNs += System.nanoTime() - startConv
