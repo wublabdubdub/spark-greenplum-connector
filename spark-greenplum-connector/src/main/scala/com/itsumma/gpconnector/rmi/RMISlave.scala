@@ -452,7 +452,10 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
       throw new Exception(s"gpfdist stream interrupted before buffered bytes fully drained for instanceId=${instanceId}: " +
         s"fillBytes=${buffExchange.totalFill.get()}, drainBytes=${buffExchange.totalDrain.get()}")
     }
-    if (jobAbort.get() || coordinatorSqlComplete.get()) {
+    if (ReadCommitState.shouldFail(
+        jobAbort.get(),
+        coordinatorSqlComplete.get(),
+        sqlTransferComplete.get())) {
       throw new Exception(s"gpfdist stream interrupted or aborted before buffered data transfer completed")
     }
     pcb = pcb.copy(rowCount = rowCount)
@@ -480,7 +483,10 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
       sqlTransferComplete.get() || jobAbort.get() || coordinatorSqlComplete.get()
     })
       throw new Exception(s"gpfdist stream interrupted or aborted before transfer completed")
-    if (jobAbort.get() || (coordinatorSqlComplete.get() && !sqlTransferComplete.get()))
+    if (ReadCommitState.shouldFail(
+        jobAbort.get(),
+        coordinatorSqlComplete.get(),
+        sqlTransferComplete.get()))
       throw new Exception(s"gpfdist stream interrupted or aborted before transfer completed")
     rmiDataTargetGuard.synchronized {
       rmiDataTarget = null
