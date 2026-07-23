@@ -64,6 +64,17 @@ object ReadSchemaPlanTest {
     assert(projected.numFields == 1)
     assert(projected.getDecimal(0, 10, 2).toString == "12.34")
 
+    val duplicateSchema = StructType(Seq(
+      StructField("x", LongType),
+      StructField("x", LongType)))
+    val duplicateProjector =
+      new ReadRowProjector(duplicateSchema, duplicateSchema)
+    val duplicateRow = duplicateProjector.projectText(
+      schemaUtil,
+      Array("11", "22"))
+    assert(duplicateRow.getLong(0) == 11L)
+    assert(duplicateRow.getLong(1) == 22L)
+
     val reorderedOutput = StructType(Seq(
       source("CaseSensitiveKey"),
       source("amount")))

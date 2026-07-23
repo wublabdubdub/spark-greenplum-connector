@@ -2,7 +2,7 @@ package com.itsumma.gpconnector.reader
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.itsumma.gpconnector.SparkSchemaUtil
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{StructField, StructType}
 
 import java.sql.SQLException
 
@@ -90,7 +90,7 @@ private[gpconnector] final class ReadRowProjector(
     transferSchema: StructType,
     outputSchema: StructType) extends Serializable {
 
-  private val outputIndexes: Array[Int] = outputSchema.fields.map { outputField =>
+  private def resolveOutputIndex(outputField: StructField): Int = {
     val exactIndex =
       transferSchema.fields.indexWhere(_.name == outputField.name)
     val index =
@@ -102,6 +102,13 @@ private[gpconnector] final class ReadRowProjector(
       s"Output column ${outputField.name} is absent from transfer schema")
     index
   }
+
+  private val outputIndexes: Array[Int] =
+    if (transferSchema == outputSchema) {
+      outputSchema.fields.indices.toArray
+    } else {
+      outputSchema.fields.map(resolveOutputIndex)
+    }
 
   def projectText(
       schemaUtil: SparkSchemaUtil,
