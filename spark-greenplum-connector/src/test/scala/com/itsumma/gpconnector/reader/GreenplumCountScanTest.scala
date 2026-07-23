@@ -110,6 +110,28 @@ object GreenplumCountScanTest {
     assert(nullFailure.getMessage.startsWith(
       "COUNT query returned NULL:"))
 
+    val extraRows = new AtomicInteger(0)
+    val multiRowResultSet = proxy(classOf[ResultSet]) { (method, _) =>
+      method.getName match {
+        case "next" =>
+          java.lang.Boolean.valueOf(
+            extraRows.getAndIncrement() < 2)
+        case "getLong" => Long.box(123L)
+        case "wasNull" => java.lang.Boolean.FALSE
+        case "close" => null
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+    val multiRowFailure = expectFailure[IllegalStateException] {
+      DriverCountQuery.execute(
+        connectionReturning(statementReturning(multiRowResultSet)),
+        "cdm_dwyz.orders",
+        "",
+        "cdm_dwyz")
+    }
+    assert(multiRowFailure.getMessage.startsWith(
+      "COUNT query returned more than one row:"))
+
     val queryFailure = new SQLException("query failure")
     val closeFailure = new SQLException("statement close failure")
     val cleanupStatement = proxy(classOf[PreparedStatement]) { (method, _) =>

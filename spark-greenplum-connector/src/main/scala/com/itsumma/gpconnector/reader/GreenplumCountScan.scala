@@ -79,6 +79,10 @@ private[gpconnector] object DriverCountQuery {
         throw new IllegalStateException(
           s"COUNT query returned NULL: $sql")
       }
+      if (resultSet.next()) {
+        throw new IllegalStateException(
+          s"COUNT query returned more than one row: $sql")
+      }
     } catch {
       case caught: Throwable =>
         failure = caught
