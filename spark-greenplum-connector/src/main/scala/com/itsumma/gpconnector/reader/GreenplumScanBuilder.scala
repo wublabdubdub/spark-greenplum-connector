@@ -70,11 +70,10 @@ class GreenplumScanBuilder(
 
   override def supportCompletePushDown(
       aggregation: Aggregation): Boolean =
-    countPushdown.nonEmpty &&
-      CountPushdown.accept(
-        aggregation,
-        allFiltersPushed = unsupportedFilters.isEmpty,
-        sqlTransfer = optionsFactory.sqlTransfer).nonEmpty
+    CountPushdown.accept(
+      aggregation,
+      allFiltersPushed = unsupportedFilters.isEmpty,
+      sqlTransfer = optionsFactory.sqlTransfer).nonEmpty
 
   private[reader] def currentOutputSchema: StructType = outputSchema
 

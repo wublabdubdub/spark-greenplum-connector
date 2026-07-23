@@ -26,8 +26,9 @@ object GreenplumScanBuilderTest {
     val count = new Aggregation(
       Array[AggregateFunc](new CountStar()),
       Array.empty[Expression])
-    assert(builder.pushAggregation(count))
     assert(builder.supportCompletePushDown(count))
+    assert(!builder.hasCountPushdown)
+    assert(builder.pushAggregation(count))
     assert(builder.hasCountPushdown)
     assert(builder.build().isInstanceOf[GreenplumCountScan])
 
@@ -36,6 +37,7 @@ object GreenplumScanBuilderTest {
     val unsupported = EqualNullSafe("x", 1)
     assert(unsupportedBuilder.pushFilters(Array(unsupported))
       .sameElements(Array(unsupported)))
+    assert(!unsupportedBuilder.supportCompletePushDown(count))
     assert(!unsupportedBuilder.pushAggregation(count))
     assert(!unsupportedBuilder.hasCountPushdown)
     println("GREENPLUM_SCAN_BUILDER_TEST_OK")
