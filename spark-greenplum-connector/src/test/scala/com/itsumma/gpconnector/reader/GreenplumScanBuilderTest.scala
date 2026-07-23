@@ -3,12 +3,10 @@ package com.itsumma.gpconnector.reader
 import org.apache.spark.sql.connector.expressions.Expression
 import org.apache.spark.sql.connector.expressions.aggregate.{AggregateFunc, Aggregation, CountStar}
 import org.apache.spark.sql.itsumma.gpconnector.GPOptionsFactory
-import org.apache.spark.sql.sources.{Filter, GreaterThan}
+import org.apache.spark.sql.sources.{EqualNullSafe, GreaterThan}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 
 object GreenplumScanBuilderTest {
-  private final case class UnsupportedFilter(name: String) extends Filter
-
   def main(args: Array[String]): Unit = {
     val options = GPOptionsFactory(Map(
       "url" -> "jdbc:postgresql://localhost/test",
@@ -35,7 +33,7 @@ object GreenplumScanBuilderTest {
 
     val unsupportedBuilder =
       new GreenplumScanBuilder(options, null, sourceSchema)
-    val unsupported = UnsupportedFilter("x")
+    val unsupported = EqualNullSafe("x", 1)
     assert(unsupportedBuilder.pushFilters(Array(unsupported))
       .sameElements(Array(unsupported)))
     assert(!unsupportedBuilder.pushAggregation(count))
