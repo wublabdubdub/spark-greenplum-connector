@@ -661,11 +661,34 @@ case class SparkSchemaUtil(dbTimeZoneName: String = java.time.ZoneId.systemDefau
 
   ///TODO: Add more datatypes, e.g. ArrayType(et, _),
   // see https://github.com/apache/spark/blob/master/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/jdbc/JdbcUtils.scala
-  def textToInternalRow(schema: StructType, fields: Array[String]): InternalRow = {
+  def textToInternalRow(
+      schema: StructType,
+      fields: Array[String]): InternalRow = {
     if (schema.fields.length != fields.length)
-      throw new SQLException(s"textToInternalRow: schema.size=${schema.fields.length}, but ${fields.length} data columns received")
+      throw new SQLException(
+        s"textToInternalRow: schema.size=${schema.fields.length}, " +
+          s"but ${fields.length} data columns received")
+    textToInternalRow(schema, fields, schema.fields.indices.toArray)
+  }
+
+  def textToInternalRow(
+      schema: StructType,
+      fields: Array[String],
+      sourceIndexes: Array[Int]): InternalRow = {
+    if (schema.fields.length != sourceIndexes.length)
+      throw new SQLException(
+        s"textToInternalRow: schema.size=${schema.fields.length}, " +
+          s"but ${sourceIndexes.length} source indexes received")
+    sourceIndexes.foreach { sourceIndex =>
+      if (sourceIndex < 0 || sourceIndex >= fields.length)
+        throw new SQLException(
+          s"textToInternalRow: source index=$sourceIndex is outside " +
+            s"${fields.length} data columns")
+    }
     val row = new SpecificInternalRow(schema.fields.map(x => x.dataType))
-    fields.zipWithIndex.foreach{ case(txt ,i) => {
+    sourceIndexes.zipWithIndex.foreach {
+      case (sourceIndex, i) =>
+      val txt = fields(sourceIndex)
       val isNull = txt.toLowerCase.equals("null") || txt.isEmpty
       schema.fields(i).dataType match {
         case StringType => {
@@ -738,7 +761,7 @@ case class SparkSchemaUtil(dbTimeZoneName: String = java.time.ZoneId.systemDefau
       }
       if (isNull)
         row.setNullAt(i)
-    }}
+    }
     row
   }
 }

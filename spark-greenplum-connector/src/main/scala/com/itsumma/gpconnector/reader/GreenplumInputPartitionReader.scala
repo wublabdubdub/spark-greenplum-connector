@@ -42,6 +42,8 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
   }
   private val rowProjector =
     new ReadRowProjector(schemaOrPlaceholder, outputSchema)
+  private val schemaUtil =
+    SparkSchemaUtil(optionsFactory.dbTimezone)
   private val fieldDelimiter = '\t'
   private val lines = new mutable.Queue[InternalRow]()
   private var dataLine: InternalRow = null
@@ -111,9 +113,7 @@ class GreenplumInputPartitionReader(optionsFactory: GPOptionsFactory,
               if (transferSchema.nonEmpty) rowString.split(fieldDelimiter) else "".split(fieldDelimiter)
             }
             val row = progressTracker.trackProgress("parseFields") {
-              val transferRow = SparkSchemaUtil(optionsFactory.dbTimezone)
-                .textToInternalRow(schemaOrPlaceholder, fields)
-              rowProjector.project(transferRow)
+              rowProjector.projectText(schemaUtil, fields)
             }
             val startEnq = System.nanoTime()
             convNs += System.nanoTime() - startConv

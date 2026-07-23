@@ -1,8 +1,10 @@
 package com.itsumma.gpconnector.reader
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
+import org.apache.spark.sql.itsumma.gpconnector.SparkSchemaUtil
 import org.apache.spark.sql.types.StructType
+
+import java.sql.SQLException
 
 private[gpconnector] final case class ReadSchemaPlan(
     outputSchema: StructType,
@@ -88,7 +90,6 @@ private[gpconnector] final class ReadRowProjector(
     transferSchema: StructType,
     outputSchema: StructType) extends Serializable {
 
-  private val identityProjection = transferSchema == outputSchema
   private val outputIndexes: Array[Int] = outputSchema.fields.map { outputField =>
     val exactIndex =
       transferSchema.fields.indexWhere(_.name == outputField.name)
@@ -102,16 +103,14 @@ private[gpconnector] final class ReadRowProjector(
     index
   }
 
-  def project(row: InternalRow): InternalRow = {
-    if (identityProjection) {
-      row
-    } else {
-      val values = outputIndexes.zipWithIndex.map {
-        case (transferIndex, outputIndex) =>
-          if (row.isNullAt(transferIndex)) null
-          else row.get(transferIndex, outputSchema.fields(outputIndex).dataType)
-      }.toArray[Any]
-      new GenericInternalRow(values)
+  def projectText(
+      schemaUtil: SparkSchemaUtil,
+      fields: Array[String]): InternalRow = {
+    if (transferSchema.length != fields.length) {
+      throw new SQLException(
+        s"ReadRowProjector: transfer schema.size=${transferSchema.length}, " +
+          s"but ${fields.length} data columns received")
     }
+    schemaUtil.textToInternalRow(outputSchema, fields, outputIndexes)
   }
 }
