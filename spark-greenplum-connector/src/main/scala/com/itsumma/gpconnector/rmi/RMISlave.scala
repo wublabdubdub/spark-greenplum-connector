@@ -170,6 +170,16 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
     with Unreferenced
     with Logging
 {
+  private def unexportAfterStartupFailure(
+      failure: Throwable): Unit = {
+    try {
+      RmiObjectLifecycle.forceUnexport(this)
+    } catch {
+      case cleanupFailure: Throwable =>
+        failure.addSuppressed(cleanupFailure)
+    }
+  }
+
   private val progressTracker: ProgressTracker = new ProgressTracker()
   private val streamingBatchId = TaskContext.get.getLocalProperty("streaming.sql.batchId")
   private val isContinuousProcessing = TaskContext.get.getLocalProperty("__is_continuous_processing")
@@ -195,7 +205,9 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
         s"${e.getClass.getCanonicalName} " +
         s"${e.getMessage}"
       logError(msg)
-      throw new IllegalStateException(msg, e)
+      val startupFailure = new IllegalStateException(msg, e)
+      unexportAfterStartupFailure(startupFailure)
+      throw startupFailure
   }
   // private var partList: Set[ITSIpcClient] = Set[ITSIpcClient]() //server.participantsList(instanceSegmentId)
   private val localWriteBufferGuard: AnyRef = new Object()
@@ -236,13 +248,17 @@ class RMISlave(optionsFactory: GPOptionsFactory, serverAddress: String, queryId:
     }
   } catch {
     case failure: Exception =>
+      val direction = if (readOrWrite) "read" else "write"
       val message =
-        s"Unable to check in read instance ${instanceId} for query ${queryId}: " +
+        s"Unable to check in $direction instance ${instanceId} for query ${queryId}: " +
           s"${failure.getClass.getCanonicalName}: ${failure.getMessage}"
       readStartupState = ReadStartupState.failed(message)
       transferAbort.abort(message)
       logError(message)
-      throw new IllegalStateException(message, failure)
+      val startupFailure =
+        new IllegalStateException(message, failure)
+      unexportAfterStartupFailure(startupFailure)
+      throw startupFailure
   }
 
   def isNormalNoWork: Boolean = readStartupState.isNormalEof
