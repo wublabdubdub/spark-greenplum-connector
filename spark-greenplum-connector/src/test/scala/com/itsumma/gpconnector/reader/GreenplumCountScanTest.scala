@@ -21,45 +21,50 @@ object GreenplumCountScanTest {
       "select count(*)::bigint as connector_count from " +
         "(select * from orders) connector_count_source")
 
+    val validResultSet = countResultSet(
+      hasRow = true,
+      countValue = 123L,
+      nullValue = false)
+    val validStatement = statementReturning(validResultSet)
+    val validConnection = connectionReturning(validStatement)
+    assert(DriverCountQuery.execute(
+      validConnection,
+      "cdm_dwyz.orders",
+      "amount > 50",
+      "cdm_dwyz") == 123L)
+
     val options = GPOptionsFactory(Map(
       "url" -> "jdbc:postgresql://localhost/test",
       "dbtable" -> "cdm_dwyz.orders"
     ))
+    val loads = new AtomicInteger(0)
     val scan = new GreenplumCountScan(
       options,
-      "cdm_dwyz.orders",
-      "amount > 50")
-    assert(scan.toBatch.planInputPartitions().length == 1)
-    assert(scan.readSchema() == CountPushdown.OutputSchema)
-
-    val nextCalls = new AtomicInteger(0)
-    val resultSet = proxy(classOf[ResultSet]) { (method, _) =>
-      method.getName match {
-        case "next" =>
-          java.lang.Boolean.valueOf(nextCalls.getAndIncrement() == 0)
-        case "getLong" => Long.box(123L)
-        case "wasNull" => java.lang.Boolean.FALSE
-        case "close" => null
-        case _ => defaultValue(method.getReturnType)
-      }
-    }
-    val statement = proxy(classOf[PreparedStatement]) { (method, _) =>
-      method.getName match {
-        case "executeQuery" => resultSet
-        case "close" => null
-        case _ => defaultValue(method.getReturnType)
-      }
-    }
-    val connection = connectionReturning(statement)
-    val reader = new GreenplumCountPartitionReader(
       null,
       "cdm_dwyz.orders",
       "amount > 50",
-      connection,
-      "cdm_dwyz")
+      () => {
+        loads.incrementAndGet()
+        123L
+      })
+    assert(loads.get() == 0)
+    val firstPlan = scan.toBatch.planInputPartitions()
+    val secondPlan = scan.toBatch.planInputPartitions()
+    assert(loads.get() == 1)
+    assert(firstPlan.length == 1)
+    assert(firstPlan.head.asInstanceOf[GreenplumCountInputPartition]
+      .countValue == 123L)
+    assert(secondPlan.head.asInstanceOf[GreenplumCountInputPartition]
+      .countValue == 123L)
+    assert(scan.readSchema() == CountPushdown.OutputSchema)
+
+    val reader =
+      GreenplumCountReaderFactory.createReader(firstPlan.head)
     assert(reader.next())
     assert(reader.get().getLong(0) == 123L)
     assert(!reader.next())
+    assert(expectFailure[IllegalStateException](reader.get())
+      .getMessage == "get() called without a current COUNT row")
     reader.close()
 
     val databaseFailure = new SQLException("MDB count failed")
@@ -70,15 +75,91 @@ object GreenplumCountScanTest {
         case _ => defaultValue(method.getReturnType)
       }
     }
-    val failingReader = new GreenplumCountPartitionReader(
-      null,
-      "cdm_dwyz.orders",
-      "",
-      connectionReturning(failingStatement),
-      "cdm_dwyz")
-    assert(expectSqlFailure(failingReader.next()).getMessage == "MDB count failed")
+    val propagated = expectFailure[SQLException] {
+      DriverCountQuery.execute(
+        connectionReturning(failingStatement),
+        "cdm_dwyz.orders",
+        "",
+        "cdm_dwyz")
+    }
+    assert(propagated eq databaseFailure)
+
+    val emptyFailure = expectFailure[IllegalStateException] {
+      DriverCountQuery.execute(
+        connectionReturning(statementReturning(countResultSet(
+          hasRow = false,
+          countValue = 0L,
+          nullValue = false))),
+        "cdm_dwyz.orders",
+        "",
+        "cdm_dwyz")
+    }
+    assert(emptyFailure.getMessage.startsWith(
+      "COUNT query returned no row:"))
+
+    val nullFailure = expectFailure[IllegalStateException] {
+      DriverCountQuery.execute(
+        connectionReturning(statementReturning(countResultSet(
+          hasRow = true,
+          countValue = 0L,
+          nullValue = true))),
+        "cdm_dwyz.orders",
+        "",
+        "cdm_dwyz")
+    }
+    assert(nullFailure.getMessage.startsWith(
+      "COUNT query returned NULL:"))
+
+    val queryFailure = new SQLException("query failure")
+    val closeFailure = new SQLException("statement close failure")
+    val cleanupStatement = proxy(classOf[PreparedStatement]) { (method, _) =>
+      method.getName match {
+        case "executeQuery" => throw queryFailure
+        case "close" => throw closeFailure
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+    val failureWithSuppressed = expectFailure[SQLException] {
+      DriverCountQuery.execute(
+        connectionReturning(cleanupStatement),
+        "cdm_dwyz.orders",
+        "",
+        "cdm_dwyz")
+    }
+    assert(failureWithSuppressed eq queryFailure)
+    assert(failureWithSuppressed.getSuppressed.sameElements(
+      Array[Throwable](closeFailure)))
+
     println("GREENPLUM_COUNT_SCAN_TEST_OK")
   }
+
+  private def countResultSet(
+      hasRow: Boolean,
+      countValue: Long,
+      nullValue: Boolean): ResultSet = {
+    val nextCalls = new AtomicInteger(0)
+    proxy(classOf[ResultSet]) { (method, _) =>
+      method.getName match {
+        case "next" =>
+          java.lang.Boolean.valueOf(
+            hasRow && nextCalls.getAndIncrement() == 0)
+        case "getLong" => Long.box(countValue)
+        case "wasNull" => java.lang.Boolean.valueOf(nullValue)
+        case "close" => null
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
+  }
+
+  private def statementReturning(
+      resultSet: ResultSet): PreparedStatement =
+    proxy(classOf[PreparedStatement]) { (method, _) =>
+      method.getName match {
+        case "executeQuery" => resultSet
+        case "close" => null
+        case _ => defaultValue(method.getReturnType)
+      }
+    }
 
   private def connectionReturning(
       statement: PreparedStatement): Connection =
@@ -90,12 +171,17 @@ object GreenplumCountScanTest {
       }
     }
 
-  private def expectSqlFailure(body: => Boolean): SQLException = {
+  private def expectFailure[T <: Throwable](
+      body: => Any)(
+      implicit expectedClass: Manifest[T]): T = {
     try {
       body
-      throw new AssertionError("Expected SQLException")
+      throw new AssertionError(
+        s"Expected ${expectedClass.runtimeClass.getName}")
     } catch {
-      case failure: SQLException => failure
+      case failure
+          if expectedClass.runtimeClass.isInstance(failure) =>
+        failure.asInstanceOf[T]
     }
   }
 

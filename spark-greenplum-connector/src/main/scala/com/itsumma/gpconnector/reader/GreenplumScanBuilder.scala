@@ -32,6 +32,7 @@ class GreenplumScanBuilder(
         case Some(_) =>
           new GreenplumCountScan(
             optionsFactory,
+            rowSet,
             optionsFactory.tableOrQuery,
             whereClause)
         case None =>

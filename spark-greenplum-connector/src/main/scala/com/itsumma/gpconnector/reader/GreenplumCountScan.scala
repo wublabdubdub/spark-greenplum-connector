@@ -1,6 +1,6 @@
 package com.itsumma.gpconnector.reader
 
-import com.itsumma.gpconnector.GPClient
+import com.itsumma.gpconnector.{GPClient, GreenplumRowSet}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.connector.read._
@@ -33,98 +33,149 @@ private[gpconnector] object CountSql {
   }
 }
 
-private[gpconnector] final class GreenplumCountScan(
-    optionsFactory: GPOptionsFactory,
-    tableOrQuery: String,
-    whereClause: String)
-  extends Scan
-    with Batch {
-
-  override def readSchema(): StructType = CountPushdown.OutputSchema
-
-  override def toBatch: Batch = this
-
-  override def planInputPartitions(): Array[InputPartition] =
-    Array(GreenplumCountInputPartition)
-
-  override def createReaderFactory(): PartitionReaderFactory =
-    GreenplumCountReaderFactory(optionsFactory, tableOrQuery, whereClause)
-}
-
-private[gpconnector] case object GreenplumCountInputPartition
-  extends InputPartition
-
-private[gpconnector] final case class GreenplumCountReaderFactory(
-    optionsFactory: GPOptionsFactory,
-    tableOrQuery: String,
-    whereClause: String)
-  extends PartitionReaderFactory {
-
-  override def createReader(
-      partition: InputPartition): PartitionReader[InternalRow] = {
-    require(
-      partition == GreenplumCountInputPartition,
-      s"Unexpected COUNT input partition ${partition.getClass.getName}")
-    new GreenplumCountPartitionReader(
-      optionsFactory,
-      tableOrQuery,
-      whereClause)
-  }
-}
-
-private[gpconnector] final class GreenplumCountPartitionReader(
-    optionsFactory: GPOptionsFactory,
-    tableOrQuery: String,
-    whereClause: String,
-    suppliedConnection: Connection = null,
-    suppliedDefaultSchema: String = null)
-  extends PartitionReader[InternalRow] {
-
-  private var gpClient: GPClient = null
-  private var connection: Connection = suppliedConnection
-  private var statement: PreparedStatement = null
-  private var resultSet: ResultSet = null
-  private var executed = false
-  private var currentRow: InternalRow = null
-
-  override def next(): Boolean = {
-    if (executed) {
-      currentRow = null
-      return false
-    }
-    executed = true
+private[gpconnector] object DriverCountQuery {
+  def execute(
+      optionsFactory: GPOptionsFactory,
+      rowSet: GreenplumRowSet,
+      tableOrQuery: String,
+      whereClause: String): Long = {
+    require(rowSet != null, "GreenplumRowSet is required for COUNT pushdown")
+    val connection = rowSet.getGpClient.getConnection()
+    var count = 0L
+    var failure: Throwable = null
     try {
       val defaultSchema =
-        if (connection != null) suppliedDefaultSchema
-        else {
-          gpClient = new GPClient(optionsFactory)
-          connection = gpClient.getConnection()
-          GPClient.checkDbObjSearchPath(
-            connection,
-            optionsFactory.dbSchema)
-        }
-      val sql = CountSql.build(tableOrQuery, whereClause, defaultSchema)
+        GPClient.checkDbObjSearchPath(connection, optionsFactory.dbSchema)
+      count = execute(connection, tableOrQuery, whereClause, defaultSchema)
+    } catch {
+      case caught: Throwable =>
+        failure = caught
+    } finally {
+      failure = cleanup(failure, connection.close())
+    }
+    if (failure != null) throw failure
+    count
+  }
+
+  def execute(
+      connection: Connection,
+      tableOrQuery: String,
+      whereClause: String,
+      defaultSchema: String): Long = {
+    val sql = CountSql.build(tableOrQuery, whereClause, defaultSchema)
+    var statement: PreparedStatement = null
+    var resultSet: ResultSet = null
+    var count = 0L
+    var failure: Throwable = null
+    try {
       statement = connection.prepareStatement(sql)
       resultSet = statement.executeQuery()
       if (!resultSet.next()) {
         throw new IllegalStateException(
           s"COUNT query returned no row: $sql")
       }
-      val count = resultSet.getLong(1)
+      count = resultSet.getLong(1)
       if (resultSet.wasNull()) {
         throw new IllegalStateException(
           s"COUNT query returned NULL: $sql")
       }
-      currentRow = new GenericInternalRow(Array[Any](count))
-      true
     } catch {
-      case failure: Throwable =>
-        try close()
-        catch {
-          case cleanupFailure: Throwable =>
-            failure.addSuppressed(cleanupFailure)
+      case caught: Throwable =>
+        failure = caught
+    } finally {
+      if (resultSet != null) {
+        failure = cleanup(failure, resultSet.close())
+      }
+      if (statement != null) {
+        failure = cleanup(failure, statement.close())
+      }
+    }
+    if (failure != null) throw failure
+    count
+  }
+
+  private def cleanup(
+      existingFailure: Throwable,
+      body: => Unit): Throwable = {
+    try {
+      body
+      existingFailure
+    } catch {
+      case cleanupFailure: Throwable =>
+        if (existingFailure == null) cleanupFailure
+        else {
+          existingFailure.addSuppressed(cleanupFailure)
+          existingFailure
         }
-        throw failure
+    }
+  }
+}
+
+private[gpconnector] final class GreenplumCountScan(
+    optionsFactory: GPOptionsFactory,
+    rowSet: GreenplumRowSet,
+    tableOrQuery: String,
+    whereClause: String,
+    suppliedCountLoader: () => Long = null)
+  extends Scan
+    with Batch {
+
+  private lazy val countValue: Long =
+    if (suppliedCountLoader != null) suppliedCountLoader()
+    else {
+      DriverCountQuery.execute(
+        optionsFactory,
+        rowSet,
+        tableOrQuery,
+        whereClause)
+    }
+
+  override def readSchema(): StructType = CountPushdown.OutputSchema
+
+  override def toBatch: Batch = this
+
+  override def planInputPartitions(): Array[InputPartition] =
+    Array(GreenplumCountInputPartition(countValue))
+
+  override def createReaderFactory(): PartitionReaderFactory =
+    GreenplumCountReaderFactory
+}
+
+private[gpconnector] final case class GreenplumCountInputPartition(
+    countValue: Long)
+  extends InputPartition
+
+private[gpconnector] case object GreenplumCountReaderFactory
+  extends PartitionReaderFactory {
+
+  override def createReader(
+      partition: InputPartition): PartitionReader[InternalRow] =
+    partition match {
+      case countPartition: GreenplumCountInputPartition =>
+        new GreenplumCountPartitionReader(countPartition.countValue)
+      case unexpected =>
+        throw new IllegalArgumentException(
+          s"Unexpected COUNT input partition ${unexpected.getClass.getName}")
+    }
+}
+
+private[gpconnector] final class GreenplumCountPartitionReader(
+    countValue: Long)
+  extends PartitionReader[InternalRow] {
+
+  private val countRow =
+    new GenericInternalRow(Array[Any](countValue))
+  private var emitted = false
+  private var currentRow: InternalRow = null
+
+  override def next(): Boolean = {
+    if (emitted) {
+      currentRow = null
+      false
+    } else {
+      emitted = true
+      currentRow = countRow
+      true
     }
   }
 
@@ -137,31 +188,6 @@ private[gpconnector] final class GreenplumCountPartitionReader(
   }
 
   override def close(): Unit = {
-    var firstFailure: Throwable = null
-    def cleanup(body: => Unit): Unit = {
-      try body
-      catch {
-        case failure: Throwable =>
-          if (firstFailure == null) firstFailure = failure
-          else firstFailure.addSuppressed(failure)
-      }
-    }
-    if (resultSet != null) {
-      cleanup(resultSet.close())
-      resultSet = null
-    }
-    if (statement != null) {
-      cleanup(statement.close())
-      statement = null
-    }
-    if (connection != null) {
-      cleanup(connection.close())
-      connection = null
-    }
-    if (gpClient != null) {
-      cleanup(gpClient.close())
-      gpClient = null
-    }
-    if (firstFailure != null) throw firstFailure
+    currentRow = null
   }
 }
